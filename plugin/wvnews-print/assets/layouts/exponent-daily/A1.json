@@ -1,0 +1,116 @@
+{
+  "_comment": "ET daily A1 position grid. Plugin fills positions in priority order from the publication plan's A1 stories. Editor assigns only weight; plugin maps weight to position + block size. Bounds are placeholders pending measurement from telegram2026.indt (open in InDesign + read frame bounds from master pages). Bounds are in points; coordinate convention [top, left, bottom, right] matches InDesign DOM.",
+
+  "pubProfile": "exponent-daily",
+  "pageRole": "A1",
+  "templateId": "telegram2026",
+  "chromeSnippet": "snippets/chrome/exponent-daily/a1daily.idms",
+  "folioStyle": "letter-number",
+
+  "positions": [
+    {
+      "id": "centerpiece",
+      "priority": 1,
+      "accepts": ["Top Story"],
+      "defaultBlock": "4col_story_2photos_boxed",
+      "fallbackBlocks": ["6col_story", "4col_story_1photo_1mug"],
+      "bounds_pts": [120, 36, 432, 540],
+      "_bounds_note": "TBD — measure from telegram2026.indt master page A. Approx: top-center of page, below INSIDE strip + nameplate."
+    },
+    {
+      "id": "lead-left",
+      "priority": 2,
+      "accepts": ["Focal Story", "Top Story"],
+      "defaultBlock": "4col_story_1photo_1mug",
+      "fallbackBlocks": ["4col_story", "2col_story"],
+      "bounds_pts": [120, 540, 432, 720],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "lead-right",
+      "priority": 3,
+      "accepts": ["Focal Story"],
+      "defaultBlock": "4col_story_1photo_1mug",
+      "fallbackBlocks": ["4col_story"],
+      "bounds_pts": [120, 0, 432, 36],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "lower-left",
+      "priority": 4,
+      "accepts": ["Standard"],
+      "defaultBlock": "4col_story",
+      "fallbackBlocks": ["2col_story"],
+      "bounds_pts": [432, 36, 720, 252],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "lower-center",
+      "priority": 5,
+      "accepts": ["Standard"],
+      "defaultBlock": "4col_story",
+      "fallbackBlocks": ["2col_story"],
+      "bounds_pts": [432, 252, 720, 468],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "lower-right",
+      "priority": 6,
+      "accepts": ["Standard"],
+      "defaultBlock": "4col_story",
+      "fallbackBlocks": ["2col_story"],
+      "bounds_pts": [432, 468, 720, 684],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "brief-A",
+      "priority": 7,
+      "accepts": ["Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [720, 36, 864, 216],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "brief-B",
+      "priority": 8,
+      "accepts": ["Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [720, 216, 864, 396],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "brief-C",
+      "priority": 9,
+      "accepts": ["Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [720, 396, 864, 576],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "brief-D",
+      "priority": 10,
+      "accepts": ["Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [720, 576, 864, 720],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "bottom-ad",
+      "priority": 11,
+      "type": "ad-slot",
+      "bounds_pts": [864, 36, 1008, 720],
+      "_bounds_note": "TBD — full-width house ad strip across the bottom of A1"
+    }
+  ],
+
+  "fillRules": {
+    "sortBy": "weight",
+    "weightOrder": ["Top Story", "Focal Story", "Standard", "Brief"],
+    "overBudgetBehavior": "error",
+    "overBudgetMessage": "Page A1 over-budgeted: more stories than positions. Editor must reduce A1 assignments or move stories to another page."
+  }
+}

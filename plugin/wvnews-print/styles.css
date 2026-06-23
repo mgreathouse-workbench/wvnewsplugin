@@ -1,0 +1,148 @@
+/* WVNews Print panel — minimal Spectrum-ish styling, vanilla CSS so
+   we don't pull in Spectrum Web Components and a bundler. UXP respects
+   prefers-color-scheme from the InDesign theme. */
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #2c2c2c;
+  background: #f4f4f4;
+}
+@media (prefers-color-scheme: dark) {
+  body { color: #e1e1e1; background: #1f1f1f; }
+}
+
+#root { display: flex; flex-direction: column; height: 100%; }
+
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border-bottom: 1px solid #d4d4d4;
+  background: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  .header { background: #2a2a2a; border-bottom-color: #3a3a3a; }
+}
+.title { font-weight: 700; font-size: 13px; }
+.user { font-size: 11px; color: #6b6b6b; }
+@media (prefers-color-scheme: dark) { .user { color: #aaaaaa; } }
+
+#main { flex: 1 1 auto; overflow-y: auto; padding: 10px; }
+
+.footer {
+  padding: 4px 10px; border-top: 1px solid #d4d4d4;
+  font-size: 10px; color: #6b6b6b; background: #f9f9f9;
+}
+@media (prefers-color-scheme: dark) {
+  .footer { background: #1a1a1a; border-top-color: #3a3a3a; color: #999; }
+}
+
+/* ── Generic controls ──────────────────────────────────────── */
+button.primary, button.secondary, button.ghost {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+button.primary  { background: #2680eb; color: #ffffff; border-color: #2680eb; }
+button.primary:hover { background: #1473e6; }
+button.primary:disabled { background: #b3b3b3; border-color: #b3b3b3; cursor: not-allowed; }
+button.secondary { background: transparent; color: #2680eb; border-color: #2680eb; }
+button.ghost { background: transparent; color: #2c2c2c; border-color: transparent; }
+@media (prefers-color-scheme: dark) { button.ghost { color: #e1e1e1; } }
+
+input[type=text], input[type=date], select, textarea {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid #b3b3b3;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #2c2c2c;
+  font-family: inherit;
+}
+@media (prefers-color-scheme: dark) {
+  input[type=text], input[type=date], select, textarea {
+    background: #2a2a2a; border-color: #4a4a4a; color: #e1e1e1;
+  }
+}
+
+label.field { display: block; margin-bottom: 8px; }
+label.field > .lbl { display: block; font-size: 10px; font-weight: 700;
+                     text-transform: uppercase; letter-spacing: 0.5px;
+                     color: #6b6b6b; margin-bottom: 3px; }
+
+.row { display: flex; gap: 8px; align-items: center; }
+.row > * { flex: 1 1 auto; }
+
+.alert {
+  padding: 6px 10px; border-radius: 4px; font-size: 11px;
+  margin: 6px 0;
+}
+.alert-error   { background: #fde8e8; color: #971515; border: 1px solid #f5b5b5; }
+.alert-info    { background: #e8f1fd; color: #1956b3; border: 1px solid #b8d6f5; }
+.alert-success { background: #e6f4ea; color: #1b5e20; border: 1px solid #b7e1c0; }
+
+/* ── Sign-in screen ─────────────────────────────────────────── */
+.signin-card { max-width: 320px; margin: 24px auto; text-align: center; }
+.signin-card h2 { font-size: 16px; margin: 0 0 6px; }
+.signin-card p  { font-size: 12px; color: #6b6b6b; margin: 0 0 16px; }
+.signin-card .steps { text-align: left; font-size: 12px; }
+.signin-card .steps li { margin-bottom: 6px; }
+
+/* ── Story list ─────────────────────────────────────────────── */
+.story {
+  background: #ffffff;
+  border: 1px solid #d4d4d4;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.story:hover { border-color: #2680eb; }
+@media (prefers-color-scheme: dark) {
+  .story { background: #2a2a2a; border-color: #3a3a3a; }
+}
+.story.placed { opacity: 0.65; }
+.story-headline { font-weight: 700; font-size: 12.5px; line-height: 1.3; }
+.story-meta { font-size: 11px; color: #6b6b6b; margin-top: 3px; }
+.story-meta .tag {
+  display: inline-block; padding: 1px 6px; border-radius: 8px;
+  background: #eef; color: #335; font-size: 10px; margin-right: 4px;
+}
+.story-meta .tag.placed { background: #dff5e0; color: #1b5e20; }
+.story-meta .tag.removed { background: #fde2e2; color: #8a1b1b; }
+.story-actions { display: flex; gap: 4px; margin-top: 6px; }
+
+/* ── Selected story details ─────────────────────────────────── */
+.detail { padding: 8px 0; }
+.detail h3 { font-size: 14px; margin: 0 0 4px; }
+.detail .byline { font-size: 11px; color: #6b6b6b; margin-bottom: 8px; }
+.detail .photo-thumb {
+  max-width: 100%; max-height: 120px; border-radius: 4px;
+  border: 1px solid #d4d4d4; margin-bottom: 8px;
+}
+.detail .stats { font-size: 11px; color: #6b6b6b; margin-bottom: 8px; }
+.template-list { margin-top: 6px; }
+.template-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 6px; border-radius: 4px; cursor: pointer;
+}
+.template-row:hover { background: #eef; }
+@media (prefers-color-scheme: dark) {
+  .template-row:hover { background: #333; }
+}
+.template-row .kind { font-size: 10px; color: #6b6b6b; text-transform: uppercase; }
+
+.muted { color: #6b6b6b; font-size: 11px; }
+.empty { text-align: center; padding: 24px 0; color: #6b6b6b; font-size: 12px; }
+.spinner { display: inline-block; width: 12px; height: 12px;
+           border: 2px solid #ccc; border-top-color: #2680eb;
+           border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
