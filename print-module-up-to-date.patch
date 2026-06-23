@@ -1,0 +1,987 @@
+diff --git a/plugin/wvnews-print/api.js b/plugin/wvnews-print/api.js
+index 8dde81f..f4bcfd6 100644
+--- a/plugin/wvnews-print/api.js
++++ b/plugin/wvnews-print/api.js
+@@ -291,6 +291,15 @@ async function breakPageLock({ editionId, folio }) {
+ // Fetch a page binary as ArrayBuffer. In prod the checkout response
+ // returns a signed GCS URL; in demo it's a back-end stream at
+ // /pages/.../download (auth-gated). Either way, just fetch it.
++// List available classifieds / legals / obits for a publication (the
++// Marketplace tab). kind = 'classifieds' | 'legals' | 'obits'.
++async function fetchMarketplace(siteId, kind, date) {
++  if (!siteId || !kind) throw new Error('fetchMarketplace: siteId + kind required');
++  const qs = date ? `?date=${encodeURIComponent(date)}` : '';
++  const r = await call(`/api/print/marketplace/${encodeURIComponent(siteId)}/${encodeURIComponent(kind)}${qs}`);
++  return { count: r?.count || 0, items: Array.isArray(r?.items) ? r.items : [] };
++}
++
+ async function fetchPageBinary(downloadUrl) {
+   if (!downloadUrl) throw new Error('fetchPageBinary: downloadUrl required');
+   if (downloadUrl.startsWith(CONFIG.SERVER_BASE)) {
+@@ -309,5 +318,5 @@ module.exports = {
+   getPublicationTemplate, downloadPublicationTemplateBinary, fetchStyleMap,
+   listEditions, getEdition, updateEditionStatus, fetchAssetContent,
+   listEditionPages, checkoutPage, heartbeatPage, checkinPage, breakPageLock,
+-  fetchPageBinary,
++  fetchPageBinary, fetchMarketplace,
+ };
+diff --git a/plugin/wvnews-print/app.js b/plugin/wvnews-print/app.js
+index 424f63d..ad31dce 100644
+--- a/plugin/wvnews-print/app.js
++++ b/plugin/wvnews-print/app.js
+@@ -65,9 +65,10 @@ const {
+   fetchBudget, fetchSites, recordPlacement,
+   listEditions, getEdition, listSnippets, updateEditionStatus,
+   listEditionPages, checkoutPage, heartbeatPage, checkinPage, fetchPageBinary,
++  fetchMarketplace,
+ } = require('./api.js');
+ const {
+-  placeTemplate, flowIntoSelectedFrame, placePhotoInSelection,
++  placeTemplate, flowIntoSelectedFrame, placePhotoInSelection, placeMarketplaceBlock,
+   flowFullStoryIntoLabelledFrames, threadAndJump,
+   captureSourceForJump, completeJumpToFrame,
+   placeStoryIntoSelectedFrame,
+@@ -141,7 +142,11 @@ const state = {
+   // The panel toggles between two top-level views: the existing
+   // budget+placement flow ('budget') and the new edition-build flow
+   // ('editions'). See PUBLICATION-CREATION-SPEC.md.
+-  view: 'budget',                  // 'budget' | 'editions'
++  view: 'budget',                  // 'budget' | 'editions' | 'marketplace'
++
++  // Marketplace tab: available classifieds / legals / obits for the
++  // selected publication, pulled on demand and placed into a frame.
++  marketplace: null,               // { loading, classifieds:{items}, legals:{items}, obits:{items} }
+ 
+   // Editions inner view: list of editions, the create/edit form,
+   // or the detail (post-create) screen.
+@@ -316,10 +321,13 @@ function renderMain() {
+     <div class="row" style="margin:6px 0 8px;border-bottom:1px solid #d4d4d4;">
+       <button class="ghost" data-view="budget"       style="font-weight:${state.view === 'budget' ? '700' : '400'};border-bottom:${state.view === 'budget' ? '2px solid #1b5e20' : '2px solid transparent'};border-radius:0;">Budget</button>
+       <button class="ghost" data-view="editions" style="font-weight:${state.view === 'editions' ? '700' : '400'};border-bottom:${state.view === 'editions' ? '2px solid #1b5e20' : '2px solid transparent'};border-radius:0;">Editions</button>
++      <button class="ghost" data-view="marketplace" style="font-weight:${state.view === 'marketplace' ? '700' : '400'};border-bottom:${state.view === 'marketplace' ? '2px solid #1b5e20' : '2px solid transparent'};border-radius:0;">Marketplace</button>
+     </div>
+ 
+     ${state.view === 'editions'
+       ? renderEditionsView()
++      : state.view === 'marketplace'
++      ? renderMarketplaceView()
+       : `${state.budget ? renderBudgetList() : '<div class="empty">Pick a publication and edition, then click Load budget.</div>'}
+          ${sel ? renderDetail(sel) : ''}`
+     }
+@@ -334,8 +342,15 @@ function renderMain() {
+       state.selectedEdition = null;
+       render();
+       if (v === 'editions') refreshEditions();
++      if (v === 'marketplace') refreshMarketplace();
+     };
+   }
++  // Marketplace tab: refresh counts + per-kind place buttons.
++  const btnMktRefresh = $('btn-mkt-refresh');
++  if (btnMktRefresh) btnMktRefresh.onclick = () => refreshMarketplace();
++  for (const el of document.querySelectorAll('[data-mkt-place]')) {
++    el.onclick = () => onPlaceMarketplace(el.getAttribute('data-mkt-place'));
++  }
+   // Editions view: row clicks drill into an edition; the "back"
+   // button in the detail view returns to the list.
+   for (const el of document.querySelectorAll('[data-pub-id]')) {
+@@ -373,6 +388,8 @@ function renderMain() {
+   // Create + edit form
+   const btnPubNew = $('btn-pub-new');
+   if (btnPubNew) btnPubNew.onclick = () => openPubForm(null);
++  const btnPubRefresh = $('btn-pub-refresh');
++  if (btnPubRefresh) btnPubRefresh.onclick = () => refreshEditions();
+   const btnPubEdit = $('btn-pub-edit');
+   if (btnPubEdit) btnPubEdit.onclick = () => openPubForm(state.selectedEdition);
+   const btnPubBuild = $('btn-pub-build');
+@@ -414,7 +431,7 @@ function renderMain() {
+       const code = site?.code || '';
+       if (code && /^\d{4}-\d{2}-\d{2}$/.test(f.editionDate)) {
+         const pid = previewPubId(code, f.editionDate);
+-        el.textContent = `→ ${pid}${site?.buildFolder ? ` · ${site.buildFolder}/${pid}` : ''}`;
++        el.textContent = `→ ${pid}`;
+         el.style.color = '#6b6b6b';
+       } else {
+         el.textContent = code ? 'Enter the edition date as YYYY-MM-DD' : 'Pick a publication and enter the date as YYYY-MM-DD';
+@@ -586,6 +603,71 @@ function renderBudgetList() {
+ 
+ // ── Editions view: list / form / detail dispatch ──────────────────
+ 
++// ── Marketplace view: pull + place classifieds / legals / obits ───
++function renderMarketplaceView() {
++  if (!state.siteId) {
++    return '<div class="empty">Pick a publication above to load its classifieds, legals, and obituaries.</div>';
++  }
++  const m = state.marketplace;
++  if (!m || m.loading) {
++    return '<div class="empty"><span class="spinner"></span> Loading marketplace…</div>';
++  }
++  const row = (kind, label) => {
++    const n = ((m[kind] && m[kind].items) || []).length;
++    return `
++      <div class="story" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
++        <div>
++          <div class="story-headline">${label}</div>
++          <div class="story-meta">${n} available${m.date ? ` · ${escapeHtml(m.date)}` : ''}</div>
++        </div>
++        <button class="primary" data-mkt-place="${kind}" ${n && !state.busy ? '' : 'disabled'}>Place</button>
++      </div>`;
++  };
++  return `
++    <div class="row" style="margin-bottom:8px;align-items:center;justify-content:space-between;">
++      <div style="font-size:11px;color:#6b6b6b;">Select a text frame in InDesign, then click Place.</div>
++      <button class="secondary" id="btn-mkt-refresh">↻ Refresh</button>
++    </div>
++    ${row('classifieds', 'Classifieds')}
++    ${row('legals', 'Legals')}
++    ${row('obits', 'Obituaries')}
++  `;
++}
++
++async function refreshMarketplace() {
++  if (!state.siteId) { state.marketplace = null; render(); return; }
++  state.marketplace = { loading: true, date: state.editionDate || '' };
++  state.error = ''; render();
++  try {
++    const [classifieds, legals, obits] = await Promise.all([
++      fetchMarketplace(state.siteId, 'classifieds', state.editionDate),
++      fetchMarketplace(state.siteId, 'legals', state.editionDate),
++      fetchMarketplace(state.siteId, 'obits', state.editionDate),
++    ]);
++    state.marketplace = { loading: false, date: state.editionDate || '', classifieds, legals, obits };
++  } catch (err) {
++    state.marketplace = { loading: false, date: state.editionDate || '' };
++    state.error = `Could not load marketplace: ${err.message}`;
++  } finally {
++    render();
++  }
++}
++
++async function onPlaceMarketplace(kind) {
++  const bucket = state.marketplace && state.marketplace[kind];
++  const items = (bucket && bucket.items) || [];
++  if (!items.length) { state.error = `No ${kind} available to place.`; render(); return; }
++  state.error = ''; state.info = ''; state.busy = true; render();
++  try {
++    const res = await placeMarketplaceBlock(kind, items, null);
++    state.info = `Placed ${res.placed} ${kind} into ${res.frame || 'the selected frame'}.`;
++  } catch (err) {
++    state.error = err.message;
++  } finally {
++    state.busy = false; render();
++  }
++}
++
+ function renderEditionsView() {
+   if (state.editionsLoading) {
+     return '<div class="empty"><span class="spinner"></span> Loading editions…</div>';
+@@ -604,6 +686,7 @@ function renderEditionsList() {
+   return `
+     <div class="row" style="margin-bottom:8px;">
+       <button class="primary" id="btn-pub-new" style="flex:1;">+ New edition</button>
++      <button class="secondary" id="btn-pub-refresh" title="Re-fetch editions from the server (e.g. after creating one online)">↻ Refresh</button>
+     </div>
+     ${!list.length
+       ? `<div class="empty">No editions planned${state.siteId ? ` for ${escapeHtml(state.siteId)}` : ''} yet. Click <b>+ New edition</b> above.</div>`
+@@ -700,7 +783,7 @@ function renderEditionForm() {
+       </label>
+       <div id="pubform-idpreview" style="font-size:10px;margin-top:4px;font-family:monospace;color:${siteCode && /^\d{4}-\d{2}-\d{2}$/.test(form.editionDate) ? '#6b6b6b' : '#a04040'};">
+         ${siteCode && /^\d{4}-\d{2}-\d{2}$/.test(form.editionDate)
+-          ? `→ ${escapeHtml(pubId)}${site?.buildFolder ? ` · ${escapeHtml(site.buildFolder)}/${escapeHtml(pubId)}` : ''}`
++          ? `→ ${escapeHtml(pubId)}`
+           : 'Enter the edition date as YYYY-MM-DD'}
+       </div>
+     </div>
+@@ -802,9 +885,6 @@ function renderEditionDetail(pub) {
+         ${(pub.sections || []).map(s => `${s.letter}1–${s.letter}${s.pageCount}`).join(', ')} ·
+         <span class="tag">${escapeHtml(pub.status || 'planned')}</span>
+       </div>
+-      <div style="font-size:10px;color:#6b6b6b;margin-top:2px;font-family:monospace;">
+-        ${escapeHtml(pub.buildFolder || '')}
+-      </div>
+     </div>
+     ${renderActiveCheckoutBanner(pub)}
+     <div style="margin-top:6px;padding-top:6px;border-top:1px solid #d4d4d4;">
+@@ -858,10 +938,9 @@ function renderEditionDetail(pub) {
+         ${pub.status === 'built' ? 'Rebuild Pages' : 'Build Pages'}
+       </button>
+       <div style="font-size:10px;color:#6b6b6b;margin-top:3px;line-height:1.3;">
+-        Creates one InDesign document per page (<b>${pages.length}</b>) in
+-        <code>${escapeHtml(pub.buildFolder || '')}</code>, opening the pub template
+-        and placing each page's assigned snippet. Existing <code>.indd</code> files
+-        with the same folio are overwritten.
++        Builds each page (<b>${pages.length}</b>) from the pub template + its
++        assigned snippet and <b>checks it in to the website</b> as a new version.
++        Each build bumps the page's version in the cloud — no local files.
+       </div>
+       ${state.buildProgress ? `
+         <div style="font-size:10px;color:#1b5e20;margin-top:4px;font-family:monospace;">
+@@ -1220,7 +1299,6 @@ function minutesLeft(expiresAt) {
+ async function onBuildEdition() {
+   const pub = state.selectedEdition;
+   if (!pub) { state.error = 'No edition selected.'; render(); return; }
+-  if (!pub.buildFolder) { state.error = 'This edition has no build folder set.'; render(); return; }
+   const total = (pub.pages || []).length;
+   if (!total) { state.error = 'This edition has no pages to build.'; render(); return; }
+ 
+@@ -1229,24 +1307,24 @@ async function onBuildEdition() {
+   // second click to confirm.
+   if (pub.status === 'built' && !state.confirmRebuild) {
+     state.confirmRebuild = true;
+-    state.error = `${pub.id} was already built. Rebuilding overwrites every .indd in the folder, including any manual edits. Click Rebuild Pages again to confirm.`;
++    state.error = `${pub.id} was already built. Rebuilding checks in a new version of every page on the website, overwriting any manual edits. Click Rebuild Pages again to confirm.`;
+     render();
+     return;
+   }
+   state.confirmRebuild = false;
+ 
+   state.busy = true; state.error = ''; state.info = ''; state.buildProgress = ''; render();
+-  const PHASE = { create: 'opening template', download: 'downloading snippet', place: 'placing', save: 'saving' };
++  const PHASE = { checkout: 'locking page', create: 'opening template', download: 'downloading snippet', place: 'placing', save: 'checking in' };
+   try {
+     const result = await buildEditionPages(pub, state.snippetsById, (p) => {
+       state.buildProgress = `[${p.index + 1}/${p.total}] ${p.folio} — ${PHASE[p.phase] || p.phase}…`;
+       render();
+     });
+ 
+-    const lines = [`Built ${result.built}/${result.results.length} page${result.results.length === 1 ? '' : 's'} → ${result.folder}`];
++    const lines = [`Built ${result.built}/${result.results.length} page${result.results.length === 1 ? '' : 's'} → checked in to the website`];
+     for (const r of result.results) {
+       lines.push(r.saved
+-        ? `  ✓ ${r.folio}.indd${r.placed ? '' : ' (no snippet placed)'}${r.assets && r.assets.placed ? ` + ${r.assets.placed} asset${r.assets.placed === 1 ? '' : 's'}` : ''}${r.assets && r.assets.missed ? ` (${r.assets.missed} asset${r.assets.missed === 1 ? '' : 's'} missing)` : ''}`
++        ? `  ✓ ${r.folio}${r.version ? ` v${r.version}` : ''}${r.placed ? '' : ' (no snippet placed)'}${r.assets && r.assets.placed ? ` + ${r.assets.placed} asset${r.assets.placed === 1 ? '' : 's'}` : ''}${r.assets && r.assets.missed ? ` (${r.assets.missed} asset${r.assets.missed === 1 ? '' : 's'} missing)` : ''}`
+         : `  ✗ ${r.folio} — ${r.error || 'failed'}`);
+     }
+     state.info = lines.join('\n');
+diff --git a/plugin/wvnews-print/indesign.js b/plugin/wvnews-print/indesign.js
+index aba3426..82540a9 100644
+--- a/plugin/wvnews-print/indesign.js
++++ b/plugin/wvnews-print/indesign.js
+@@ -9,6 +9,8 @@ const {
+   downloadPublicationTemplateBinary,
+   fetchAssetContent,
+   fetchStyleMap,
++  checkoutPage,
++  checkinPage,
+ } = require('./api.js');
+ 
+ let ID = null;
+@@ -243,6 +245,81 @@ async function flowIntoSelectedFrame(story, styleMap, kind = 'body') {
+   });
+ }
+ 
++// Build the grouped text for a marketplace block. Classifieds group by
++// category (one header line each); legals/obits list one block per item.
++// Returns { text, headerIdx } — headerIdx are paragraph indices to style.
++function buildMarketplaceText(kind, items) {
++  const lines = [];
++  const headerIdx = [];
++  if (kind === 'classifieds') {
++    const byCat = new Map();
++    for (const it of items) {
++      const c = String(it.category || 'Classifieds').trim() || 'Classifieds';
++      if (!byCat.has(c)) byCat.set(c, []);
++      byCat.get(c).push(it);
++    }
++    for (const cat of [...byCat.keys()].sort((a, b) => a.localeCompare(b))) {
++      headerIdx.push(lines.length);
++      lines.push(cat);
++      for (const it of byCat.get(cat)) {
++        const t = String(it.text || '').trim();
++        if (t) lines.push(t);
++      }
++    }
++  } else if (kind === 'obits') {
++    for (const o of items) {
++      const head = [o.name, o.city].filter(Boolean).join(', ');
++      const block = [head, String(o.text || '').trim(), o.funeral].filter(Boolean).join('\n');
++      if (block) lines.push(block);
++    }
++  } else { // legals
++    for (const l of items) {
++      const block = [l.title, String(l.text || '').trim()].filter(Boolean).join('\n');
++      if (block) lines.push(block);
++    }
++  }
++  return { text: lines.join('\n'), headerIdx };
++}
++
++// Place a marketplace block (classifieds / legals / obits) into the
++// SELECTED text frame. Classifieds get one text header per category;
++// graphics are a later pass. Undo-wrapped like flowIntoSelectedFrame.
++async function placeMarketplaceBlock(kind, items, styleMap) {
++  const id = host();
++  if (!Array.isArray(items) || !items.length) throw new Error('Nothing available to place.');
++  return await new Promise((resolve, reject) => {
++    id.app.doScript(
++      async () => {
++        try {
++          const sel = id.app.selection;
++          if (!sel || !sel.length) throw new Error('Select a text frame first.');
++          const frame = sel[0];
++          const { text, headerIdx } = buildMarketplaceText(kind, items);
++          if (!text) throw new Error('Nothing to place.');
++          setFrameText(frame, text);
++          if (kind === 'classifieds' && headerIdx.length) {
++            try {
++              const doc = activeDocument();
++              const styleName = (styleMap && styleMap.paragraph && (styleMap.paragraph.classifiedHeader || styleMap.paragraph.classifiedCategory)) || 'Classified Category';
++              const style = doc && doc.paragraphStyles.itemByName(styleName);
++              if (style && style.isValid) {
++                const paras = frame.parentStory.paragraphs;
++                for (const i of headerIdx) {
++                  if (i < paras.length) paras.item(i).applyParagraphStyle(style, true);
++                }
++              }
++            } catch (e) { console.warn('[wvnews-print] marketplace header styling skipped:', e?.message || e); }
++          }
++          resolve({ placed: items.length, frame: frame.label || frame.name || '' });
++        } catch (e) { reject(e); }
++      },
++      id.ScriptLanguage.UXPSCRIPT, undefined,
++      id.UndoModes.ENTIRE_SCRIPT,
++      `WVNews Print: place ${kind}`,
++    );
++  });
++}
++
+ async function placePhotoInSelection(photo, story) {
+   if (!photo || !photo.url) throw new Error('Story has no photo.');
+   const id = host();
+@@ -1762,30 +1839,6 @@ function valueForBind(story, bindKey) {
+ // main thread and deadlocks the async place pipeline. We don't bind any
+ // story content here; the snippet is placed as designed (chrome).
+ 
+-// Resolve a folder by absolute native path, creating it (and missing
+-// parents) as needed. Requires manifest `localFileSystem: fullAccess`.
+-async function ensureFolderByPath(absPath) {
+-  const lfs = require('uxp').storage.localFileSystem;
+-  const norm = String(absPath).replace(/\/+$/, '');
+-  if (!norm || norm === '') throw new Error('Empty build-folder path.');
+-  try {
+-    const entry = await lfs.getEntryWithUrl(`file://${norm}`);
+-    if (entry && entry.isFolder) return entry;
+-  } catch { /* doesn't exist yet — create below */ }
+-  const idx = norm.lastIndexOf('/');
+-  if (idx <= 0) throw new Error(`Cannot create folder at root: ${norm}`);
+-  const parentPath = norm.slice(0, idx);
+-  const name = norm.slice(idx + 1);
+-  const parent = await ensureFolderByPath(parentPath);
+-  try { return await parent.createFolder(name); }
+-  catch (e) {
+-    // Race / already-created: re-resolve.
+-    const again = await lfs.getEntryWithUrl(`file://${norm}`);
+-    if (again && again.isFolder) return again;
+-    throw e;
+-  }
+-}
+-
+ // Fetch the publication's uploaded .indt template via the platform
+ // API, write it to UXP's temp folder, and return the file entry. The
+ // caller passes this to app.open() to spawn a fresh untitled doc per
+@@ -2417,24 +2470,6 @@ async function placeSnippetIntoActiveDoc(doc, tempPath, snippet) {
+   return true;
+ }
+ 
+-// Save the active document as `<filename>` inside folderEntry. InDesign
+-// UXP's accepted `save()` target varies by build, so try a UXP file
+-// entry first, then a native-path string. Returns the saved path.
+-async function saveDocAs(doc, folderEntry, filename) {
+-  let lastErr;
+-  try {
+-    const fileEntry = await folderEntry.createFile(filename, { overwrite: true });
+-    await doc.save(fileEntry);
+-    return fileEntry.nativePath || `${folderEntry.nativePath}/${filename}`;
+-  } catch (e) { lastErr = e; }
+-  try {
+-    const native = `${folderEntry.nativePath}/${filename}`;
+-    await doc.save(native);
+-    return native;
+-  } catch (e) { lastErr = e; }
+-  throw new Error(`save failed for ${filename}: ${lastErr?.message || lastErr}`);
+-}
+-
+ // ── Content-asset placement ──────────────────────────────────────
+ //
+ // During Build Pages, after the snippet is on the page, each assigned
+@@ -2997,6 +3032,58 @@ async function placeClassifiedAsset(page, spread, asset) {
+   console.warn('[wvnews-print] no frame labeled "classified-body" for', asset.id);
+ }
+ 
++// Classifieds section: all of a page's classifieds grouped by category,
++// flowed into the page's `classified-body` frame with one TEXT header per
++// category (e.g. "Vehicles", "Real Estate — For Sale"). Category graphics
++// (the WHEELS-style art) are a later pass — text headers for now. Header
++// paragraphs get a paragraph style if the template defines one
++// (styleMap.paragraph.classifiedHeader, else "Classified Category");
++// otherwise they render as plain header lines.
++async function placeClassifiedSection(page, spread, items, styleMap, doc) {
++  let frame = null;
++  for (const c of [page, spread]) frame = frame || frameByLabelOrName(c, 'classified-body');
++  if (!frame) { console.warn('[wvnews-print] no frame labeled "classified-body" for classifieds'); return; }
++
++  // Group by category, stable alphabetical order.
++  const byCat = new Map();
++  for (const it of items) {
++    const cat = String(it.category || 'Classifieds').trim() || 'Classifieds';
++    if (!byCat.has(cat)) byCat.set(cat, []);
++    byCat.get(cat).push(it);
++  }
++  const cats = [...byCat.keys()].sort((a, b) => a.localeCompare(b));
++
++  // One paragraph per line; track which paragraph indices are headers.
++  const lines = [];
++  const headerIdx = [];
++  for (const cat of cats) {
++    headerIdx.push(lines.length);
++    lines.push(cat);
++    for (const it of byCat.get(cat)) {
++      const t = String(it.text || '').trim();
++      if (t) lines.push(t);
++    }
++  }
++  if (!lines.length) return;
++  setFrameText(frame, lines.join('\n'));
++
++  // Best-effort header styling (no-op if the style isn't in the template).
++  try {
++    const headerStyleName =
++      (styleMap && styleMap.paragraph && (styleMap.paragraph.classifiedHeader || styleMap.paragraph.classifiedCategory))
++      || 'Classified Category';
++    const style = doc && doc.paragraphStyles.itemByName(headerStyleName);
++    if (style && style.isValid) {
++      const paras = frame.parentStory.paragraphs;
++      for (const i of headerIdx) {
++        if (i < paras.length) paras.item(i).applyParagraphStyle(style, true);
++      }
++    }
++  } catch (e) {
++    console.warn('[wvnews-print] classified header styling skipped:', e?.message || e);
++  }
++}
++
+ // Obituary: text-only into 'obituary-body' (falls back to 'classified-body').
+ async function placeObituaryAsset(page, spread, asset) {
+   const body = [asset.name, asset.city, asset.text, asset.funeral].filter(Boolean).join('\n');
+@@ -3035,6 +3122,9 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}) {
+   // Path B and lose headline-in-its-own-box.
+   let autoStoryIdx = 0;
+   let placed = 0, missed = 0;
++  // Classifieds are placed together as a grouped section (one header per
++  // category) after the loop, not one-frame-each — so collect them here.
++  const classifiedItems = [];
+   for (const a of list) {
+     try {
+       const content = await fetchAssetContent(edition.id, a.kind, a.id);
+@@ -3048,7 +3138,7 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}) {
+       }
+       if (a.kind === 'story')       await placeStoryAsset(pageObj, spread, content, styleMap, { storyBoxes, used: usedBoxes, jumpQueue: jumpCtx.jumpQueue, jumpFolio: jumpCtx.jumpFolio, folio: page.folio });
+       else if (a.kind === 'order')  await placeOrderAsset(pageObj, spread, content);
+-      else if (a.kind === 'classified') await placeClassifiedAsset(pageObj, spread, content);
++      else if (a.kind === 'classified') { classifiedItems.push(content); }
+       else if (a.kind === 'obituary') await placeObituaryAsset(pageObj, spread, content);
+       else if (a.kind === 'legal') await placeLegalAsset(pageObj, spread, content);
+       else { console.warn(`[wvnews-print] kind not yet wired: ${a.kind}`); missed++; continue; }
+@@ -3058,23 +3148,28 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}) {
+       console.warn(`[wvnews-print] asset placement failed for ${a.kind}/${a.id}:`, e?.message || e);
+     }
+   }
++  // Classifieds: grouped into the `classified-body` frame with one text
++  // header per category (graphics come later — text headers for now).
++  if (classifiedItems.length) {
++    try { await placeClassifiedSection(pageObj, spread, classifiedItems, styleMap, doc); }
++    catch (e) { console.warn('[wvnews-print] classified section failed:', e?.message || e); }
++  }
+   return { placed, missed };
+ }
+ 
+-// Build every page in an edition. onProgress({ folio, index, total,
+-// phase }) is called as each page moves through create→place→save.
+-// Returns { folder, results:[{folio, placed, saved, path?, error?}],
+-// built, failed }.
++// Build every page in an edition and check each one in to the website
++// (Firebase Storage) as a new version — no local TCMS folder. onProgress
++// ({ folio, index, total, phase }) fires as each page moves through
++// checkout→create→place→save(check-in). Returns
++// { results:[{folio, placed, saved, version?, error?}], built, failed }.
+ async function buildEditionPages(edition, snippetsById, onProgress) {
+   const id = host();
+   console.log('[wvnews-print] ===== BUILD DIAG v3 — story-box diagnostics ACTIVE =====');
+   if (!edition || !Array.isArray(edition.pages)) {
+     throw new Error('Edition has no pages to build.');
+   }
+-  if (!edition.buildFolder) {
+-    throw new Error('Edition has no build folder set.');
+-  }
+-  const folder = await ensureFolderByPath(edition.buildFolder);
++  // Built pages are saved back to the website (Firebase Storage) via the
++  // per-page check-out → check-in flow — NOT to a local TCMS volume.
+   const templateEntry = await resolveTemplateEntry(edition);
+   // Effective style map for this pub — maps story field keys to the
+   // InDesign paragraph styles applied when a story flows into a single
+@@ -3082,7 +3177,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
+   let styleMap = null;
+   try { styleMap = await fetchStyleMap(edition.siteId); }
+   catch (e) { console.warn('[wvnews-print] style map fetch failed:', e?.message || e); }
+-  console.log('[wvnews-print] build: folder=', edition.buildFolder,
++  console.log('[wvnews-print] build: target=website (check-in)',
+     'template=', (templateEntry && templateEntry.nativePath) || '(blank docs)',
+     'styleMap=', styleMap ? (styleMap.id || 'loaded') : '(none)');
+ 
+@@ -3116,6 +3211,13 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
+     const pgIsJump = isJumpPage(pg);
+     let doc = null;
+     try {
++      // Acquire the page lock on the website before building, so the
++      // check-in upload is accepted. We build fresh from the template +
++      // snippet, so we ignore whatever version checkout returns — we only
++      // need the lock. Throws 423 here if someone else holds the page.
++      notify(pg.folio, i, 'checkout');
++      await checkoutPage({ editionId: edition.id, folio: pg.folio, host: 'Build Pages' });
++
+       notify(pg.folio, i, 'create');
+       // Open the template (.indt opens as a new untitled doc) or, if no
+       // template is uploaded for this pub, create a blank document.
+@@ -3168,8 +3270,27 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
+ 
+       stampFolio(doc, pg.folio, edition);
+ 
++      // Save the built page to a temp file, read its bytes, and check it
++      // in to the website (Firebase Storage) as a new version. keepLock
++      // false releases the lock we took above.
+       notify(pg.folio, i, 'save');
+-      const path = await saveDocAs(doc, folder, `${pg.folio}.indd`);
++      const fileName = cloudPageTempName(edition.id, pg.folio);
++      const tFolder = await tempFolder();
++      let entry;
++      try {
++        entry = await tFolder.createFile(fileName, { overwrite: true });
++        await doc.save(entry);
++      } catch {
++        await doc.save(`${tFolder.nativePath}/${fileName}`);
++        entry = await tFolder.getEntry(fileName);
++      }
++      const bytes = await entry.read({ format: require('uxp').storage.formats.binary });
++      const checkin = await checkinPage({
++        editionId: edition.id, folio: pg.folio, bytes,
++        note: 'Built by plugin', keepLock: false,
++      });
++      const version = checkin?.page?.currentVersion ?? checkin?.currentVersion ?? null;
++      const path = `website v${version ?? '?'}`;
+ 
+       // Abort any place gun that page.place() may have left loaded.
+       // doc.close() will throw "User canceled this action." if the
+@@ -3201,8 +3322,8 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
+         console.warn('[wvnews-print] build: all close forms threw; doc + .idlk lock may linger for', pg.folio);
+       }
+       doc = null;
+-      results.push({ folio: pg.folio, placed, saved: true, path, closed: closeOk, assets: assetStats });
+-      console.log('[wvnews-print] build: saved', pg.folio, '->', path, closeOk ? '' : '(close failed)');
++      results.push({ folio: pg.folio, placed, saved: true, version, path, closed: closeOk, assets: assetStats });
++      console.log('[wvnews-print] build: checked in', pg.folio, '->', path, closeOk ? '' : '(close failed)');
+     } catch (e) {
+       const msg = e?.message || String(e);
+       console.error('[wvnews-print] build: failed for', pg.folio, msg);
+@@ -3214,7 +3335,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
+ 
+   const built = results.filter(r => r.saved).length;
+   const failed = results.length - built;
+-  return { folder: edition.buildFolder, results, built, failed };
++  return { results, built, failed };
+ }
+ 
+ // ── Cloud check-out / check-in ─────────────────────────────────────
+@@ -3344,7 +3465,7 @@ async function closePageDoc(doc) {
+ }
+ 
+ module.exports = {
+-  placeTemplate, flowIntoSelectedFrame, placePhotoInSelection,
++  placeTemplate, flowIntoSelectedFrame, placePhotoInSelection, placeMarketplaceBlock,
+   flowFullStoryIntoLabelledFrames, threadAndJump,
+   captureSourceForJump, completeJumpToFrame,
+   placeStoryIntoSelectedFrame,
+diff --git a/src/app/admin/print-layout/editions/[id]/EditionEditor.jsx b/src/app/admin/print-layout/editions/[id]/EditionEditor.jsx
+index c7a47b8..7b4ea72 100644
+--- a/src/app/admin/print-layout/editions/[id]/EditionEditor.jsx
++++ b/src/app/admin/print-layout/editions/[id]/EditionEditor.jsx
+@@ -41,6 +41,7 @@ export default function EditionEditor({ edition, siteName, eligibleSnippets, sta
+   const [savedStatus, setSavedStatus] = useState(edition.status || 'planned');
+   const [saving, setSaving] = useState(false);
+   const [deleting, setDeleting] = useState(false);
++  const [syncing, setSyncing] = useState(false);
+   const [error, setError] = useState('');
+   const [notice, setNotice] = useState('');
+ 
+@@ -135,6 +136,25 @@ export default function EditionEditor({ edition, siteName, eligibleSnippets, sta
+     }
+   }
+ 
++  async function syncFromBudget() {
++    setError(''); setNotice('');
++    setSyncing(true);
++    try {
++      const res = await fetch(`/api/print/editions/${encodeURIComponent(edition.id)}/sync-budget`, { method: 'POST' });
++      const d = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(d.error || `Sync failed (${res.status})`);
++      const parts = [`Pulled ${d.totalAssigned || 0} assignment${d.totalAssigned === 1 ? '' : 's'} from the budget`];
++      if (d.unmatched?.length) parts.push(`${d.unmatched.length} unmatched (page didn't map to a folio)`);
++      if (d.skippedLocked?.length) parts.push(`skipped checked-out: ${d.skippedLocked.join(', ')}`);
++      setNotice(parts.join(' · '));
++      router.refresh(); // reflect the new per-page assets
++    } catch (err) {
++      setError(err.message);
++    } finally {
++      setSyncing(false);
++    }
++  }
++
+   async function remove() {
+     if (!confirm(`Delete edition ${edition.id}? This cannot be undone.`)) return;
+     setDeleting(true);
+@@ -192,6 +212,12 @@ export default function EditionEditor({ edition, siteName, eligibleSnippets, sta
+           <span className="text-xs font-bold uppercase tracking-eyebrow text-ink-500 mr-2">Sections</span>
+           {sections.map(s => `${s.letter}1–${s.letter}${s.pageCount}`).join(', ')}
+         </div>
++        <button
++          onClick={syncFromBudget}
++          disabled={syncing}
++          title="Pull editorial page assignments (budget sheet + autopage) into this edition's pages"
++          className="ml-auto px-3 py-1.5 text-sm font-semibold rounded-lg bg-ink-900 text-white hover:bg-ink-700 disabled:opacity-40"
++        >{syncing ? 'Syncing…' : 'Sync from budget'}</button>
+       </div>
+ 
+       {/* Page assignments — editable */}
+diff --git a/src/app/api/print/editions/[id]/sync-budget/route.js b/src/app/api/print/editions/[id]/sync-budget/route.js
+new file mode 100644
+index 0000000..a82d438
+--- /dev/null
++++ b/src/app/api/print/editions/[id]/sync-budget/route.js
+@@ -0,0 +1,219 @@
++// POST /api/print/editions/[id]/sync-budget
++//
++// The budget→edition bridge. Reads the editorial page assignments for
++// this edition's publication + date and seeds them into the edition's
++// per-folio `assets` so Build Pages places them automatically.
++//
++// Page source per kind:
++//   story      → story.pageAssignment (set in the print-budget sheet),
++//                with printCuts[siteId].pageAssignment overriding.
++//   classified → classifieds/{classifiedId}.autopagePage  (set in /admin/autopage)
++//   obituary   → obituaries/{obituaryId}.autopagePage
++//   legal      → legals/{id}.autopagePage
++//
++// Folio strings are normalized ("A-1" → "A1") and matched against the
++// edition's actual folios. Merge is ADDITIVE + deduped by kind:id, so
++// re-running is safe and never clobbers manually-added assets. Assets
++// whose page doesn't map to a folio are returned in `unmatched` (never
++// silently dropped). Folios actively checked out by another user are
++// skipped (returned in `skippedLocked`).
++
++import { NextResponse } from 'next/server';
++import { authorize } from '@/lib/api-auth';
++import { EDITIONS_COLLECTION, ASSET_KIND_SET, validatePageAssets } from '@/lib/print-editions';
++import { getPageFile, lockHeldBy, isLockExpired } from '@/lib/print-page-files';
++import { isDemoMode, getEditionMemory, putEditionMemory, demoAssetsFor } from '@/lib/print-demo';
++
++export const runtime = 'nodejs';
++export const dynamic = 'force-dynamic';
++
++// "A-1" / "a1" / "B-03" → "A1" / "B3". Edition folios are single-letter +
++// number (foliosFromSections emits `${letter}${i}`). Free-text pages like
++// "Opinion" or "Sports-1" don't reduce to that form and return as-is in
++// uppercase — they simply won't match a folio and land in `unmatched`.
++function normalizeFolio(s) {
++  if (!s) return null;
++  const t = String(s).trim().toUpperCase();
++  const m = t.match(/^([A-Z]+)-?0*(\d+)$/);
++  return m ? `${m[1]}${m[2]}` : t;
++}
++
++async function loadEdition(db, id) {
++  if (isDemoMode()) return getEditionMemory(id);
++  const snap = await db.collection(EDITIONS_COLLECTION).doc(id).get();
++  return snap.exists ? { id: snap.id, ...snap.data() } : null;
++}
++
++// Returns [{ kind, id, page }] — the editorial page assignment for every
++// budget item slated for this edition's publication + date.
++async function loadBudgetAssignments(db, { siteId, date }) {
++  if (isDemoMode()) {
++    return (demoAssetsFor(siteId, date) || []).map(a => ({
++      kind: a.assetType || 'story',
++      id: a.id,
++      page: a.pageAssignment || '',
++    }));
++  }
++
++  const out = [];
++
++  // Stories — page from the budget sheet (pageAssignment / printCuts).
++  try {
++    const snap = await db.collection('stories')
++      .where('includeInPrintBudget', '==', true)
++      .where('editionDate', '==', date)
++      .limit(500).get();
++    for (const doc of snap.docs) {
++      const d = doc.data() || {};
++      const docSites = d.sites && d.sites.length ? d.sites : ['wvnews'];
++      if (!(docSites.includes(siteId) || d.printSiteId === siteId)) continue;
++      const cut = d.printCuts && d.printCuts[siteId];
++      out.push({ kind: 'story', id: doc.id, page: (cut && cut.pageAssignment) || d.pageAssignment || '' });
++    }
++  } catch (err) { console.warn('[sync-budget] stories load skipped:', err?.message || err); }
++
++  // Classifieds — page from the source classified's autopagePage (/admin/autopage).
++  // Asset id is the queue doc id (what the asset-content endpoint reads).
++  await loadQueueKindAssignments(db, out, {
++    queue: 'print_classifieds_queue', kind: 'classified',
++    match: c => c.paperSlug === siteId,
++    sourceCollection: 'classifieds', sourceIdField: 'classifiedId',
++  });
++
++  // Obituaries — page from obituaries/{obituaryId}.autopagePage.
++  await loadQueueKindAssignments(db, out, {
++    queue: 'print_obits_queue', kind: 'obituary',
++    match: o => Array.isArray(o.targetEditions) && o.targetEditions.includes(siteId),
++    sourceCollection: 'obituaries', sourceIdField: 'obituaryId',
++  });
++
++  // Legals — page from legals.autopagePage; live on this date for this pub.
++  try {
++    const snap = await db.collection('legals')
++      .where('status', '==', 'Published').limit(500).get();
++    for (const doc of snap.docs) {
++      const l = doc.data() || {};
++      const pubs = l.targetPublications || l.publicationIds || [];
++      const started = !l.startDate || l.startDate <= date;
++      const notEnded = !l.endDate || l.endDate >= date;
++      if (pubs.includes(siteId) && started && notEnded) {
++        out.push({ kind: 'legal', id: doc.id, page: l.autopagePage || '' });
++      }
++    }
++  } catch (err) { console.warn('[sync-budget] legals load skipped:', err?.message || err); }
++
++  return out;
++}
++
++// Queue-backed kinds (classifieds, obits): the page lives on the SOURCE
++// doc's autopagePage, not the queue. Join queue→source per pending item.
++async function loadQueueKindAssignments(db, out, { queue, kind, match, sourceCollection, sourceIdField }) {
++  try {
++    const snap = await db.collection(queue)
++      .where('status', 'in', ['queued', 'in-layout']).limit(500).get();
++    const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(match);
++    await Promise.all(rows.map(async (r) => {
++      let page = r.pageAssignment || '';
++      const srcId = r[sourceIdField];
++      if (srcId) {
++        try {
++          const s = await db.collection(sourceCollection).doc(String(srcId)).get();
++          if (s.exists) page = s.data().autopagePage || page;
++        } catch { /* source lookup best-effort */ }
++      }
++      out.push({ kind, id: r.id, page });
++    }));
++  } catch (err) { console.warn(`[sync-budget] ${queue} load skipped:`, err?.message || err); }
++}
++
++export async function POST(request, { params }) {
++  const authz = await authorize(request, 'printlayout');
++  if (!authz) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
++
++  const { id } = params;
++  if (!id) return NextResponse.json({ error: 'edition id required' }, { status: 400 });
++
++  const { db } = isDemoMode() ? {} : await import('@/lib/firebase-admin');
++
++  const edition = await loadEdition(db, id);
++  if (!edition) return NextResponse.json({ error: 'Edition not found' }, { status: 404 });
++  if (!edition.siteId || !edition.editionDate) {
++    return NextResponse.json({ error: 'Edition is missing siteId/editionDate' }, { status: 400 });
++  }
++
++  const pages = Array.isArray(edition.pages) ? edition.pages.map(p => ({ ...p })) : [];
++  const folioSet = new Set(pages.map(p => p.folio));
++
++  const assignments = await loadBudgetAssignments(db, { siteId: edition.siteId, date: edition.editionDate });
++
++  // Bucket assignments by target folio; collect anything that doesn't map.
++  const byFolio = {};
++  const unmatched = [];
++  for (const a of assignments) {
++    if (!ASSET_KIND_SET.has(a.kind)) continue;
++    const folio = normalizeFolio(a.page);
++    if (folio && folioSet.has(folio)) {
++      (byFolio[folio] = byFolio[folio] || []).push({ kind: a.kind, id: a.id });
++    } else {
++      unmatched.push({ kind: a.kind, id: a.id, page: a.page || '' });
++    }
++  }
++
++  // Additive merge into each page's assets, deduped by kind:id. Skip folios
++  // that are checked out by another user (don't change assignments under an
++  // active InDesign session).
++  const assigned = {};
++  const skippedLocked = [];
++  for (let i = 0; i < pages.length; i++) {
++    const p = pages[i];
++    const add = byFolio[p.folio];
++    if (!add || !add.length) continue;
++
++    try {
++      const pageFile = await getPageFile({ editionId: id, folio: p.folio });
++      if (pageFile?.lock && !isLockExpired(pageFile.lock) && !lockHeldBy(pageFile.lock, authz.user)) {
++        skippedLocked.push(p.folio);
++        continue;
++      }
++    } catch { /* lock check best-effort */ }
++
++    const current = Array.isArray(p.assets) ? p.assets.slice() : [];
++    const keys = new Set(current.map(x => `${x.kind}:${x.id}`));
++    let count = 0;
++    for (const a of add) {
++      const key = `${a.kind}:${a.id}`;
++      if (keys.has(key)) continue;
++      current.push(a);
++      keys.add(key);
++      count++;
++    }
++    if (count) {
++      assigned[p.folio] = count;
++      pages[i] = { ...p, assets: current };
++    }
++  }
++
++  // Validate the resulting asset arrays before persisting.
++  for (const p of pages) {
++    const errs = validatePageAssets(Array.isArray(p.assets) ? p.assets : []);
++    if (errs.length) {
++      return NextResponse.json({ error: `${p.folio}: ${errs.join('; ')}` }, { status: 400 });
++    }
++  }
++
++  const updatedAt = new Date().toISOString();
++  if (isDemoMode()) {
++    putEditionMemory({ ...edition, pages, updatedAt });
++  } else {
++    await db.collection(EDITIONS_COLLECTION).doc(id).update({ pages, updatedAt });
++  }
++
++  const totalAssigned = Object.values(assigned).reduce((n, c) => n + c, 0);
++  return NextResponse.json({
++    ok: true,
++    assigned,            // { folio: count } of newly-added assets
++    totalAssigned,
++    unmatched,           // [{kind, id, page}] — page didn't map to a folio
++    skippedLocked,       // folios skipped because checked out by someone else
++  });
++}
+diff --git a/src/app/api/print/editions/route.js b/src/app/api/print/editions/route.js
+index 5548c75..7ce7a19 100644
+--- a/src/app/api/print/editions/route.js
++++ b/src/app/api/print/editions/route.js
+@@ -49,9 +49,10 @@ export async function GET(request) {
+ export async function POST(request) {
+   const authz = await authorize(request, 'printlayout');
+   if (!authz) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+-  if (authz.kind === 'plugin') {
+-    return NextResponse.json({ error: 'Plugin tokens cannot create publications' }, { status: 403 });
+-  }
++  // Plugin tokens MAY create editions — layout artists build the edition
++  // (sections + page count) from the InDesign panel. Other administrative
++  // actions (delete editions, manage snippets/templates, break locks)
++  // remain web-admin-only.
+ 
+   let body;
+   try {
+diff --git a/src/app/api/print/marketplace/[siteId]/[kind]/route.js b/src/app/api/print/marketplace/[siteId]/[kind]/route.js
+new file mode 100644
+index 0000000..4d047df
+--- /dev/null
++++ b/src/app/api/print/marketplace/[siteId]/[kind]/route.js
+@@ -0,0 +1,86 @@
++// GET /api/print/marketplace/[siteId]/[kind]?date=YYYY-MM-DD
++//
++// Lists the available classifieds / legals / obits for a publication so
++// the plugin's Marketplace tab can pull them and place a block. Unlike
++// the per-asset endpoint (which is edition-scoped), this is keyed by the
++// publication, returning everything currently slated for print.
++//
++//   kind = 'classifieds' → print_classifieds_queue (status queued, paperSlug==site)
++//   kind = 'obits'       → print_obits_queue (status queued, targetEditions has site)
++//   kind = 'legals'      → legals (Published, targetPublications has site, live on date)
++
++import { NextResponse } from 'next/server';
++import { authorize } from '@/lib/api-auth';
++import { isDemoMode, listDemoClassifiedsForEdition } from '@/lib/print-demo';
++
++export const runtime = 'nodejs';
++export const dynamic = 'force-dynamic';
++
++const KINDS = new Set(['classifieds', 'legals', 'obits']);
++
++export async function GET(request, { params }) {
++  const authz = await authorize(request, 'printlayout');
++  if (!authz) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
++
++  const { siteId, kind } = params;
++  if (!siteId) return NextResponse.json({ error: 'siteId required' }, { status: 400 });
++  if (!KINDS.has(kind)) return NextResponse.json({ error: `unknown kind: ${kind}` }, { status: 400 });
++  const date = new URL(request.url).searchParams.get('date') || '';
++
++  let items = [];
++  try {
++    if (isDemoMode()) {
++      if (kind === 'classifieds') {
++        items = (listDemoClassifiedsForEdition(siteId, date) || []).map(c => ({
++          id: c.id, category: c.category || '', text: c.text || '', phone: c.phone || '', city: c.city || '',
++        }));
++      }
++      // obits/legals have no demo fixtures yet → empty in demo.
++    } else {
++      const { db } = await import('@/lib/firebase-admin');
++      if (kind === 'classifieds') {
++        const snap = await db.collection('print_classifieds_queue')
++          .where('status', 'in', ['queued', 'in-layout']).limit(500).get();
++        items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
++          .filter(c => c.paperSlug === siteId)
++          .map(c => ({
++            id: c.id,
++            category: c.category || '',
++            text: c.line || c.headline || '',
++            phone: c.phone || '',
++            city: c.city || '',
++          }));
++      } else if (kind === 'obits') {
++        const snap = await db.collection('print_obits_queue')
++          .where('status', 'in', ['queued', 'in-layout']).limit(500).get();
++        items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
++          .filter(o => Array.isArray(o.targetEditions) && o.targetEditions.includes(siteId))
++          .map(o => ({
++            id: o.id, name: o.name || '', city: o.city || '',
++            dob: o.dob || '', dod: o.dod || '', text: o.text || '', funeral: o.funeral || '',
++          }));
++      } else { // legals
++        const snap = await db.collection('legals')
++          .where('status', '==', 'Published').limit(500).get();
++        items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
++          .filter(l => {
++            const pubs = l.targetPublications || l.publicationIds || [];
++            const started = !l.startDate || !date || l.startDate <= date;
++            const notEnded = !l.endDate || !date || l.endDate >= date;
++            return pubs.includes(siteId) && started && notEnded;
++          })
++          .map(l => ({
++            id: l.id,
++            title: l.title || l.fields?.title || '',
++            noticeType: l.type || l.noticeType || '',
++            text: l.text || l.fields?.text || '',
++          }));
++      }
++    }
++  } catch (err) {
++    console.error(`[print/marketplace] ${kind} load failed for ${siteId}:`, err?.message || err);
++    return NextResponse.json({ error: 'load failed' }, { status: 500 });
++  }
++
++  return NextResponse.json({ kind, siteId, count: items.length, items });
++}
