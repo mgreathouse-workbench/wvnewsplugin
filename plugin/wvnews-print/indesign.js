@@ -3094,12 +3094,93 @@ async function placeObituaryAsset(page, spread, asset) {
   console.warn('[wvnews-print] no frame labeled "obituary-body" for', asset.id);
 }
 
-// Legal notice: text-only into 'legal-body' (falls back to 'classified-body').
+// Map emphasis flags to an InDesign font-style name. Returns null when the
+// run is plain so we leave the base paragraph style's typeface untouched.
+function fontStyleName(bold, italic) {
+  if (bold && italic) return 'Bold Italic';
+  if (bold) return 'Bold';
+  if (italic) return 'Italic';
+  return null;
+}
+
+// Apply the platform's structured rich-text model (blocks of styled runs)
+// to a text frame, PRESERVING the frame's existing paragraph style as the
+// base and layering bold/italic/underline + L/C/R alignment on top. This
+// is how website formatting survives into InDesign — see lib/legal-richtext
+// on the platform for the source shape:
+//   blocks: [ { align: 'left'|'center'|'right'|'justify',
+//               runs: [ { text, bold, italic, underline }, ... ] }, ... ]
+function applyRichTextToFrame(id, frame, blocks) {
+  const story = frame && frame.parentStory;
+  if (!story || !Array.isArray(blocks) || !blocks.length) return false;
+
+  // Build the full string once, recording each styled run's character range
+  // and keeping paragraph boundaries. In InDesign DOM contents, '\r' starts
+  // a new paragraph; '\n' is a forced line break WITHIN a paragraph (what a
+  // <br> in the source should become). Both count as one character, so
+  // offsets into `full` line up with story character indices after we set
+  // contents.
+  let full = '';
+  const runRanges = [];
+  for (let bi = 0; bi < blocks.length; bi++) {
+    const runs = (blocks[bi].runs && blocks[bi].runs.length) ? blocks[bi].runs : [{ text: '' }];
+    for (const r of runs) {
+      const t = String(r.text == null ? '' : r.text).replace(/\r/g, '');
+      const start = full.length;
+      full += t;
+      if (t && (r.bold || r.italic || r.underline)) {
+        runRanges.push({ start, end: full.length - 1, bold: !!r.bold, italic: !!r.italic, underline: !!r.underline });
+      }
+    }
+    if (bi < blocks.length - 1) full += '\r';
+  }
+
+  // Deliberately do NOT set appliedParagraphStyle — the legal-body frame's
+  // base style (font/size/leading) stays intact; we only override alignment
+  // + inline emphasis.
+  story.contents = full;
+
+  const JUST = {
+    left:    id.Justification.LEFT_ALIGN,
+    center:  id.Justification.CENTER_ALIGN,
+    right:   id.Justification.RIGHT_ALIGN,
+    justify: id.Justification.LEFT_JUSTIFIED,
+  };
+  const paras = story.paragraphs;
+  for (let bi = 0; bi < blocks.length && bi < paras.length; bi++) {
+    const j = JUST[blocks[bi].align];
+    if (j != null) { try { paras.item(bi).justification = j; } catch (e) { /* keep base */ } }
+  }
+
+  // Inline character formatting. Each range is wrapped so one missing font
+  // style (e.g. a face with no 'Bold Italic') never aborts the rest.
+  for (const r of runRanges) {
+    let chars;
+    try { chars = story.characters.itemByRange(r.start, r.end); } catch (e) { continue; }
+    const fs = fontStyleName(r.bold, r.italic);
+    if (fs) { try { chars.fontStyle = fs; } catch (e) { /* font lacks this style */ } }
+    if (r.underline) { try { chars.underline = true; } catch (e) {} }
+  }
+  return true;
+}
+
+// Legal notice into 'legal-body' (falls back to 'classified-body'). Prefers
+// the website's formatting via asset.richText; falls back to plain text for
+// older platform builds that don't send it.
 async function placeLegalAsset(page, spread, asset) {
-  const body = [asset.title, asset.text].filter(Boolean).join('\n');
+  const id = host();
   for (const c of [page, spread]) {
     const f = frameByLabelOrName(c, 'legal-body') || frameByLabelOrName(c, 'classified-body');
-    if (f) { setFrameText(f, body); return; }
+    if (!f) continue;
+    if (Array.isArray(asset.richText) && asset.richText.length) {
+      const blocks = [];
+      if (asset.title) blocks.push({ align: 'left', runs: [{ text: String(asset.title) }] });
+      for (const b of asset.richText) blocks.push(b);
+      if (applyRichTextToFrame(id, f, blocks)) return;
+    }
+    const body = [asset.title, asset.text].filter(Boolean).join('\n');
+    setFrameText(f, body);
+    return;
   }
   console.warn('[wvnews-print] no frame labeled "legal-body" for', asset.id);
 }
