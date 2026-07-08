@@ -1757,7 +1757,20 @@ async function autoPaginatePage(pubProfile, pageRole, stories) {
   if (!stories || !stories.length) {
     throw new Error('No stories provided to paginate.');
   }
-  const config = await readAssetJson(`layouts/${pubProfile}/${pageRole}.json`);
+  // Prefer a bespoke config for this folio (e.g. A1.json); otherwise fall
+  // back to the profile's generic inside-page grid (_inside.json) so every
+  // inside page (A2, A3, B1, …) can paginate without a file per folio.
+  let config;
+  try {
+    config = await readAssetJson(`layouts/${pubProfile}/${pageRole}.json`);
+  } catch (e) {
+    try {
+      config = await readAssetJson(`layouts/${pubProfile}/_inside.json`);
+      console.log(`[wvnews-print] auto-paginate: no ${pageRole}.json — using _inside.json`);
+    } catch (e2) {
+      throw new Error(`No layout config for ${pubProfile}/${pageRole}, and no _inside.json fallback in this profile.`);
+    }
+  }
   console.log('[wvnews-print] auto-paginate:', pubProfile, pageRole, '— stories:', stories.length);
 
   const weightOrder = config.fillRules?.weightOrder || ['Top Story', 'Focal Story', 'Standard', 'Brief'];

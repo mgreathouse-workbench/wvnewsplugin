@@ -1,0 +1,81 @@
+{
+  "_comment": "ET daily GENERIC INSIDE PAGE grid (A2, A3, B1, ...). autoPaginatePage falls back to this when a folio has no bespoke <folio>.json. Positions accept broad weight classes so the weight-sorted stories always find a slot. Bounds are placeholders in points [top,left,bottom,right] (InDesign DOM convention) — measure the real inside-page master from telegram2026.indt and replace. Front page A1 keeps its own A1.json.",
+
+  "pubProfile": "exponent-daily",
+  "pageRole": "_inside",
+  "templateId": "telegram2026",
+  "folioStyle": "letter-number",
+
+  "positions": [
+    {
+      "id": "lead-top",
+      "priority": 1,
+      "accepts": ["Top Story", "Focal Story", "Standard"],
+      "defaultBlock": "4col_story_1photo_1mug",
+      "fallbackBlocks": ["4col_story", "6col_story", "2col_story"],
+      "bounds_pts": [72, 36, 360, 720],
+      "_bounds_note": "TBD — top of inside page below the folio line"
+    },
+    {
+      "id": "second-left",
+      "priority": 2,
+      "accepts": ["Focal Story", "Standard"],
+      "defaultBlock": "4col_story",
+      "fallbackBlocks": ["2col_story"],
+      "bounds_pts": [360, 36, 612, 396],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "second-right",
+      "priority": 3,
+      "accepts": ["Standard"],
+      "defaultBlock": "4col_story",
+      "fallbackBlocks": ["2col_story"],
+      "bounds_pts": [360, 396, 612, 720],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "lower-left",
+      "priority": 4,
+      "accepts": ["Standard", "Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [612, 36, 864, 396],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "lower-right",
+      "priority": 5,
+      "accepts": ["Standard", "Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [612, 396, 864, 720],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "brief-A",
+      "priority": 6,
+      "accepts": ["Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [864, 36, 1008, 360],
+      "_bounds_note": "TBD"
+    },
+    {
+      "id": "brief-B",
+      "priority": 7,
+      "accepts": ["Brief"],
+      "defaultBlock": "2col_story",
+      "fallbackBlocks": [],
+      "bounds_pts": [864, 360, 1008, 720],
+      "_bounds_note": "TBD"
+    }
+  ],
+
+  "fillRules": {
+    "sortBy": "weight",
+    "weightOrder": ["Top Story", "Focal Story", "Standard", "Brief"],
+    "overBudgetBehavior": "error",
+    "overBudgetMessage": "Inside page over-budgeted: more stories than positions. Reduce assignments or move stories to another page."
+  }
+}
