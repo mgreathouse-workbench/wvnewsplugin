@@ -404,10 +404,22 @@ async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt
     const buf = await fetchBinary(url);
     const tempPath = await writeTemp(`hdr-${slug}.pdf`, buf);
     const hPt = widthPt * HEADER_ASPECT;
-    // Inline anchored rectangle, sized before the graphic lands in it.
-    const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, widthPt] });
-    rect.place(tempPath);
-    try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+    // geometricBounds are read in the document's RULER units — force POINTS
+    // or a document set to inches turns [0,0,22.8,115.5] into a 115-INCH
+    // inline object that oversets and spins fitOrThread into empty columns.
+    const vp = doc.viewPreferences;
+    const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+    vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+    vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+    try {
+      // Inline anchored rectangle, sized before the graphic lands in it.
+      const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, widthPt] });
+      rect.place(tempPath);
+      try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+    } finally {
+      vp.horizontalMeasurementUnits = sH;
+      vp.verticalMeasurementUnits = sV;
+    }
   } catch (e) {
     console.warn('[wvnews-print] classified header place failed:', e?.message || e);
   }
@@ -523,12 +535,22 @@ async function placeObitPhoto(id, doc, frame, anchor) {
     const tempPath = await writeTemp(`obit-${anchor.paraIdx}.${ext}`, buf);
     // Pre-size the inline frame, THEN place — same reliable pattern as the
     // classified headers (placing at native size + resizing oversets narrow
-    // columns). A hair under the column width so it fits the line.
+    // columns). A hair under the column width so it fits the line. Force
+    // POINTS: geometricBounds read in the doc's ruler units (inches → giant).
     const wPt = CONTENT_BLOCK.widthIn * 72 - 3;
     const hPt = wPt * OBIT_PHOTO_ASPECT;
-    const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, wPt] });
-    rect.place(tempPath);
-    try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+    const vp = doc.viewPreferences;
+    const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+    vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+    vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+    try {
+      const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, wPt] });
+      rect.place(tempPath);
+      try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+    } finally {
+      vp.horizontalMeasurementUnits = sH;
+      vp.verticalMeasurementUnits = sV;
+    }
   } catch (e) {
     console.warn('[wvnews-print] obit photo placement failed:', e?.message || e);
   }
