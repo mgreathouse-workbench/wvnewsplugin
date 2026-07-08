@@ -77,9 +77,23 @@ async function fetchBinary(url) {
   if (!isAllowedBinaryUrl(url)) {
     throw new Error(`Refused fetch — host not in plugin's allowlist: ${url.slice(0, 80)}`);
   }
-  const res = await fetch(url);
+  // Our own backend routes (e.g. /api/print/section-headers) require the
+  // plugin's bearer token; public Firebase/GCS URLs (obit photos) don't.
+  const headers = {};
+  if (url.startsWith(CONFIG.SERVER_BASE)) {
+    const token = await getAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+  const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
   return await res.arrayBuffer();
+}
+
+// List the available classified/legal section-header graphics. Returns
+// { count, headers: [{ slug, url }] }. The plugin maps a category to a slug
+// and places the matching PDF at the top of that section.
+async function fetchSectionHeaders() {
+  return await call(`/api/print/section-headers`);
 }
 
 // ── Publication-creation feature ───────────────────────────────────
@@ -318,5 +332,5 @@ module.exports = {
   getPublicationTemplate, downloadPublicationTemplateBinary, fetchStyleMap,
   listEditions, getEdition, updateEditionStatus, fetchAssetContent,
   listEditionPages, checkoutPage, heartbeatPage, checkinPage, breakPageLock,
-  fetchPageBinary, fetchMarketplace,
+  fetchPageBinary, fetchMarketplace, fetchSectionHeaders,
 };

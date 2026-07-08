@@ -299,28 +299,60 @@ function buildLegalBlocks(items) {
   return blocks;
 }
 
-// Build classifieds as styled blocks: one paragraph per category header,
-// then one paragraph per ad with the Headline set BOLD as a lead-in
-// followed by the short description. Returns { blocks, headerIdx } so the
-// caller can also apply the category paragraph style to the header rows.
-function buildClassifiedBlocks(items) {
+// Map a classified category name → the section-header graphic slug (matches
+// the PDFs in Firebase page-layout-elements/section-headers/). Normalized,
+// so "Real Estate — For Rent", "Services Offered", "Pets & Livestock" etc.
+// all resolve. Categories with no dedicated art fall back to `other`.
+function categoryHeaderSlug(category) {
+  const c = String(category || '').toLowerCase();
+  if (/for\s*sale/.test(c) && !/real\s*estate/.test(c)) return 'for-sale';
+  if (/vehicle|auto|car|truck|motorcycle/.test(c)) return 'vehicles';
+  if (/real\s*estate|for\s*rent|apartment|rental|house|home/.test(c)) return 'real-estate';
+  if (/help\s*wanted|employ|job/.test(c)) return 'help-wanted';
+  if (/service/.test(c)) return 'services';
+  if (/pet|livestock|animal/.test(c)) return 'pets';
+  if (/yard|estate\s*sale|garage\s*sale|rummage/.test(c)) return 'yard-sale';
+  if (/legal|notice.*publ|public.*notice/.test(c)) return 'legals';
+  // Everything else (Other, Notices & Personal, Free/Giveaway, Wanted to
+  // Buy, Lost & Found, Farm & Outdoor, …) → the OTHER banner.
+  return 'other';
+}
+
+// Build classifieds as styled blocks grouped by category. For categories
+// with a header graphic available we emit an EMPTY placeholder paragraph the
+// caller anchors the PDF into (replacing the text header); categories with no
+// art keep a text header (headerIdx). Returns:
+//   blocks        — paragraph blocks for applyRichTextToFrame
+//   headerIdx     — paragraph indexes of TEXT headers (no art) for styling
+//   headerAnchors — [{ paraIdx, slug }] placeholder paragraphs to fill w/ art
+//   paraCat       — paraCat[i] = category name for paragraph i (for column repeat)
+// resolveHeaderSlug(category) returns a slug when art is available, else null.
+function buildClassifiedBlocks(items, resolveHeaderSlug) {
   const blocks = [];
   const headerIdx = [];
+  const headerAnchors = [];
+  const paraCat = [];
   const byCat = new Map();
   for (const it of items) {
     const c = String(it.category || 'Classifieds').trim() || 'Classifieds';
     if (!byCat.has(c)) byCat.set(c, []);
     byCat.get(c).push(it);
   }
-  const spacer = () => blocks.push({ align: 'left', runs: [{ text: '' }] });
+  const push = (block, catName) => { paraCat[blocks.length] = catName; blocks.push(block); };
   let firstCat = true;
   for (const cat of [...byCat.keys()].sort((a, b) => a.localeCompare(b))) {
-    // Blank line before each new category header (separates groups) —
-    // but not at the very top of the block.
-    if (!firstCat) spacer();
+    const slug = resolveHeaderSlug ? resolveHeaderSlug(cat) : null;
+    // Blank line before each new category (separates groups) — not at the top.
+    if (!firstCat) push({ align: 'left', runs: [{ text: '' }] }, cat);
     firstCat = false;
-    headerIdx.push(blocks.length);
-    blocks.push({ align: 'left', runs: [{ text: cat }] });
+    if (slug) {
+      // Empty, centered paragraph the header graphic gets anchored into.
+      headerAnchors.push({ paraIdx: blocks.length, slug });
+      push({ align: 'center', runs: [{ text: '' }] }, cat);
+    } else {
+      headerIdx.push(blocks.length);
+      push({ align: 'left', runs: [{ text: cat }] }, cat);
+    }
     let firstInCat = true;
     for (const it of byCat.get(cat)) {
       const head = String(it.headline || '').trim();
@@ -334,12 +366,102 @@ function buildClassifiedBlocks(items) {
       }
       if (!runs.length) continue;
       // Hard return between listings within a category.
-      if (!firstInCat) spacer();
+      if (!firstInCat) push({ align: 'left', runs: [{ text: '' }] }, cat);
       firstInCat = false;
-      blocks.push({ align: 'left', runs });
+      push({ align: 'left', runs }, cat);
     }
   }
-  return { blocks, headerIdx };
+  return { blocks, headerIdx, headerAnchors, paraCat };
+}
+
+// Size an inline header graphic's anchored frame to the column width,
+// preserving the PDF's native aspect ratio (banners are ~5:1).
+function sizeClassifiedHeaderFrame(id, gframe, widthPt) {
+  try {
+    const gb = gframe.geometricBounds; // native [top, left, bottom, right]
+    const nativeW = gb[3] - gb[1], nativeH = gb[2] - gb[0];
+    const hPt = nativeW > 0 ? widthPt * (nativeH / nativeW) : widthPt * 0.2;
+    gframe.geometricBounds = [gb[0], gb[1], gb[0] + hPt, gb[1] + widthPt];
+    return hPt;
+  } catch (e) { return widthPt * 0.2; }
+}
+
+// STEP 1 — anchor a category header PDF inline into its placeholder paragraph,
+// replacing the text header. Non-fatal.
+async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt) {
+  try {
+    const story = frame.parentStory;
+    const para = story.paragraphs.item(paraIdx);
+    if (!para || !para.isValid) return;
+    const ip = para.insertionPoints.item(0);
+    const buf = await fetchBinary(url);
+    const tempPath = await writeTemp(`hdr-${slug}.pdf`, buf);
+    const placed = ip.place(tempPath);
+    const graphic = Array.isArray(placed) ? placed[0] : placed;
+    const gframe = graphic && graphic.parent;
+    if (gframe) sizeClassifiedHeaderFrame(id, gframe, widthPt);
+  } catch (e) {
+    console.warn('[wvnews-print] classified header place failed:', e?.message || e);
+  }
+}
+
+// STEP 2 — repeat the current category's header at the TOP of every column.
+// After threading, each continuation column starts mid-category; drop an
+// overlay header banner at its top (and nudge the column's top inset down so
+// the first listing clears it). Guarded end-to-end: any failure leaves the
+// Step-1 result intact. Needs in-InDesign verification/tuning.
+async function repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTopSet) {
+  const story = frame.parentStory;
+  let cols;
+  try { cols = story.textContainers; } catch (e) { return; }
+  if (!cols || cols.length <= 1) return; // single column → nothing to repeat
+
+  // Snapshot each continuation column's top category BEFORE mutating insets.
+  const plan = [];
+  for (let ci = 1; ci < cols.length; ci++) {
+    try {
+      const col = cols[ci];
+      const p = col.texts.item(0).paragraphs.item(0);
+      const idx = p.index;
+      if (idx == null || idx < 0 || idx >= paraCat.length) continue;
+      if (anchorTopSet && anchorTopSet.has(idx)) continue; // header already at this top
+      const slug = categoryHeaderSlug(paraCat[idx]);
+      const url = slug && headerUrls[slug];
+      if (!url) continue;
+      plan.push({ col, url, slug });
+    } catch (e) { /* skip this column */ }
+  }
+
+  const vp = doc.viewPreferences;
+  const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+  try {
+    for (const { col, url, slug } of plan) {
+      try {
+        const b = col.geometricBounds; // [top, left, bottom, right]
+        const wPt = b[3] - b[1];
+        const buf = await fetchBinary(url);
+        const tempPath = await writeTemp(`hdrcol-${slug}.pdf`, buf);
+        const rect = col.parentPage
+          ? col.parentPage.rectangles.add({ geometricBounds: [b[0], b[1], b[0] + wPt * 0.2, b[3]] })
+          : null;
+        if (!rect) continue;
+        rect.place(tempPath);
+        const hPt = sizeClassifiedHeaderFrame(id, rect, wPt);
+        // Make room so the listing text starts below the banner.
+        try {
+          const tfp = col.textFramePreferences;
+          const inset = tfp.insetSpacing;
+          if (Array.isArray(inset)) { inset[0] = hPt + 2; tfp.insetSpacing = inset; }
+          else tfp.insetSpacing = [hPt + 2, 0, 0, 0];
+        } catch (e) {}
+      } catch (e) { console.warn('[wvnews-print] column header skipped:', e?.message || e); }
+    }
+  } finally {
+    vp.horizontalMeasurementUnits = sH;
+    vp.verticalMeasurementUnits = sV;
+  }
 }
 
 // Build obits as styled blocks that flow in ONE threaded column, with an
@@ -573,7 +695,7 @@ function applyBlockFormat(id, frame, fmt) {
   } catch (e) { console.warn('[wvnews-print] applyBlockFormat skipped:', e?.message || e); }
 }
 
-async function placeMarketplaceBlock(kind, items, styleMap) {
+async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
   const id = host();
   if (!Array.isArray(items) || !items.length) throw new Error('Nothing available to place.');
   return await new Promise((resolve, reject) => {
@@ -667,9 +789,16 @@ async function placeMarketplaceBlock(kind, items, styleMap) {
           // ── Classifieds / obits: a single 1-column block ─────────
           const frame = createContentBlockFrame(id, doc, page, CONTENT_BLOCK.widthIn);
           if (kind === 'classifieds') {
-            const { blocks, headerIdx } = buildClassifiedBlocks(items);
+            // A category gets a header graphic only if art is available for it.
+            const resolveHeaderSlug = (cat) => {
+              if (!headerUrls) return null;
+              const slug = categoryHeaderSlug(cat);
+              return (slug && headerUrls[slug]) ? slug : null;
+            };
+            const { blocks, headerIdx, headerAnchors, paraCat } = buildClassifiedBlocks(items, resolveHeaderSlug);
             if (!blocks.length) throw new Error('Nothing to place.');
             applyRichTextToFrame(id, frame, blocks, fmt);
+            // Style the remaining TEXT category headers (categories with no art).
             try {
               const styleName = (styleMap && styleMap.paragraph && (styleMap.paragraph.classifiedHeader || styleMap.paragraph.classifiedCategory)) || 'Classified Category';
               const style = doc.paragraphStyles.itemByName(styleName);
@@ -680,7 +809,22 @@ async function placeMarketplaceBlock(kind, items, styleMap) {
                 }
               }
             } catch (e) { console.warn('[wvnews-print] classified header styling skipped:', e?.message || e); }
+            // STEP 1: anchor each category's header graphic into its placeholder
+            // (reverse order so paragraph indexes stay valid as inline objects
+            // shift the text).
+            const hdrWidthPt = CONTENT_BLOCK.widthIn * 72;
+            for (let a = headerAnchors.length - 1; a >= 0; a--) {
+              const { paraIdx, slug } = headerAnchors[a];
+              await placeClassifiedHeader(id, doc, frame, paraIdx, headerUrls[slug], slug, hdrWidthPt);
+            }
             fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
+            // STEP 2: repeat the current category's header atop every column.
+            if (headerUrls) {
+              const anchorTops = new Set(headerAnchors.map(h => h.paraIdx));
+              try {
+                await repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTops);
+              } catch (e) { console.warn('[wvnews-print] column header repeat skipped:', e?.message || e); }
+            }
             resolve({ placed: items.length, frame: frame.name || '' });
             return;
           }

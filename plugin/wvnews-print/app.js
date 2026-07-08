@@ -65,7 +65,7 @@ const {
   fetchBudget, fetchSites, recordPlacement,
   listEditions, getEdition, listSnippets, updateEditionStatus,
   listEditionPages, checkoutPage, heartbeatPage, checkinPage, fetchPageBinary,
-  fetchMarketplace,
+  fetchMarketplace, fetchSectionHeaders,
 } = require('./api.js');
 const {
   placeTemplate, flowIntoSelectedFrame, placePhotoInSelection, placeMarketplaceBlock,
@@ -643,7 +643,19 @@ async function onPlaceMarketplace(kind) {
   if (!items.length) { state.error = `No ${kind} available to place.`; render(); return; }
   state.error = ''; state.info = ''; state.busy = true; render();
   try {
-    const res = await placeMarketplaceBlock(kind, items, null);
+    // Classifieds get section-header graphics keyed by category. Fetch the
+    // available headers (non-fatal — falls back to text headers on failure).
+    let headerUrls = null;
+    if (kind === 'classifieds') {
+      try {
+        const sh = await fetchSectionHeaders();
+        headerUrls = {};
+        for (const h of (sh && sh.headers) || []) headerUrls[h.slug] = h.url;
+      } catch (e) {
+        console.warn('[wvnews-print] section headers unavailable:', e?.message || e);
+      }
+    }
+    const res = await placeMarketplaceBlock(kind, items, null, headerUrls);
     state.info = `Placed ${res.placed} ${kind} into ${res.frame || 'the selected frame'}.`;
   } catch (err) {
     state.error = err.message;
