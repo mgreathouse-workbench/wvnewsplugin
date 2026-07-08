@@ -388,6 +388,13 @@ function sizeClassifiedHeaderFrame(id, gframe, widthPt) {
 
 // STEP 1 — anchor a category header PDF inline into its placeholder paragraph,
 // replacing the text header. Non-fatal.
+//
+// Reliable inline-image pattern: create a PRE-SIZED inline frame at the
+// insertion point (geometricBounds set the size up front), THEN place + fit
+// into it. Placing at native size first (ip.place → resize) left the banner
+// at its native column width, which oversets the line and spins fitOrThread
+// into empty columns. The PDFs are ~5.06:1 (118.497 × 23.4).
+const HEADER_ASPECT = 23.3998 / 118.497; // height / width
 async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt) {
   try {
     const story = frame.parentStory;
@@ -396,10 +403,11 @@ async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt
     const ip = para.insertionPoints.item(0);
     const buf = await fetchBinary(url);
     const tempPath = await writeTemp(`hdr-${slug}.pdf`, buf);
-    const placed = ip.place(tempPath);
-    const graphic = Array.isArray(placed) ? placed[0] : placed;
-    const gframe = graphic && graphic.parent;
-    if (gframe) sizeClassifiedHeaderFrame(id, gframe, widthPt);
+    const hPt = widthPt * HEADER_ASPECT;
+    // Inline anchored rectangle, sized before the graphic lands in it.
+    const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, widthPt] });
+    rect.place(tempPath);
+    try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
   } catch (e) {
     console.warn('[wvnews-print] classified header place failed:', e?.message || e);
   }
@@ -513,16 +521,14 @@ async function placeObitPhoto(id, doc, frame, anchor) {
     const buf = await fetchBinary(anchor.url);
     const ext = (anchor.url.split('?')[0].split('.').pop() || 'jpg').slice(0, 4);
     const tempPath = await writeTemp(`obit-${anchor.paraIdx}.${ext}`, buf);
-    const placed = ip.place(tempPath);
-    const graphic = Array.isArray(placed) ? placed[0] : placed;
-    const gframe = graphic && graphic.parent; // the inline anchored rectangle
-    if (gframe) {
-      const wPt = CONTENT_BLOCK.widthIn * 72;
-      const hPt = wPt * OBIT_PHOTO_ASPECT;
-      const gb = gframe.geometricBounds; // [top, left, bottom, right]
-      gframe.geometricBounds = [gb[0], gb[1], gb[0] + hPt, gb[1] + wPt];
-      try { gframe.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
-    }
+    // Pre-size the inline frame, THEN place — same reliable pattern as the
+    // classified headers (placing at native size + resizing oversets narrow
+    // columns). A hair under the column width so it fits the line.
+    const wPt = CONTENT_BLOCK.widthIn * 72 - 3;
+    const hPt = wPt * OBIT_PHOTO_ASPECT;
+    const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, wPt] });
+    rect.place(tempPath);
+    try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
   } catch (e) {
     console.warn('[wvnews-print] obit photo placement failed:', e?.message || e);
   }
