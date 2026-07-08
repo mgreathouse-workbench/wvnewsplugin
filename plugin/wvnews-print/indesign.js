@@ -811,20 +811,23 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
             } catch (e) { console.warn('[wvnews-print] classified header styling skipped:', e?.message || e); }
             // STEP 1: anchor each category's header graphic into its placeholder
             // (reverse order so paragraph indexes stay valid as inline objects
-            // shift the text).
-            const hdrWidthPt = CONTENT_BLOCK.widthIn * 72;
+            // shift the text). The banner PDFs are exactly one column wide, so
+            // size a hair NARROWER — an inline object equal to the line width
+            // oversets and spins fitOrThread into empty columns.
+            const hdrWidthPt = CONTENT_BLOCK.widthIn * 72 - 3;
             for (let a = headerAnchors.length - 1; a >= 0; a--) {
               const { paraIdx, slug } = headerAnchors[a];
               await placeClassifiedHeader(id, doc, frame, paraIdx, headerUrls[slug], slug, hdrWidthPt);
             }
             fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
-            // STEP 2: repeat the current category's header atop every column.
-            if (headerUrls) {
-              const anchorTops = new Set(headerAnchors.map(h => h.paraIdx));
-              try {
-                await repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTops);
-              } catch (e) { console.warn('[wvnews-print] column header repeat skipped:', e?.message || e); }
-            }
+            // STEP 2 (repeat header atop every column) is temporarily DISABLED
+            // pending in-InDesign verification of Step 1 — re-enable once the
+            // inline placement is confirmed clean.
+            // if (headerUrls) {
+            //   const anchorTops = new Set(headerAnchors.map(h => h.paraIdx));
+            //   try { await repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTops); }
+            //   catch (e) { console.warn('[wvnews-print] column header repeat skipped:', e?.message || e); }
+            // }
             resolve({ placed: items.length, frame: frame.name || '' });
             return;
           }
