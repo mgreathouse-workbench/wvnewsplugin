@@ -414,8 +414,19 @@ async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt
     try {
       // Inline anchored rectangle, sized before the graphic lands in it.
       const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, widthPt] });
+      // No frame outline on the banner.
+      try { rect.strokeWeight = 0; } catch (e) {}
+      try { rect.strokeColor = doc.swatches.itemByName('None'); } catch (e) {}
       rect.place(tempPath);
       try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+      // The story's base leading (8.5pt) is far shorter than the banner, so
+      // it collided with the listings. Make the banner's line tall enough and
+      // add breathing room above/below.
+      try {
+        para.leading = hPt + 4;
+        para.spaceBefore = 6;
+        para.spaceAfter = 6;
+      } catch (e) {}
     } finally {
       vp.horizontalMeasurementUnits = sH;
       vp.verticalMeasurementUnits = sV;
@@ -537,7 +548,7 @@ async function placeObitPhoto(id, doc, frame, anchor) {
     // classified headers (placing at native size + resizing oversets narrow
     // columns). A hair under the column width so it fits the line. Force
     // POINTS: geometricBounds read in the doc's ruler units (inches → giant).
-    const wPt = CONTENT_BLOCK.widthIn * 72 - 3;
+    const wPt = CONTENT_BLOCK.widthIn * 72 - 1;
     const hPt = wPt * OBIT_PHOTO_ASPECT;
     const vp = doc.viewPreferences;
     const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
@@ -545,8 +556,12 @@ async function placeObitPhoto(id, doc, frame, anchor) {
     vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
     try {
       const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, wPt] });
+      try { rect.strokeWeight = 0; } catch (e) {}
+      try { rect.strokeColor = doc.swatches.itemByName('None'); } catch (e) {}
       rect.place(tempPath);
       try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+      // Make the line tall enough for the portrait + a little room below.
+      try { para.leading = hPt + 4; para.spaceAfter = 5; } catch (e) {}
     } finally {
       vp.horizontalMeasurementUnits = sH;
       vp.verticalMeasurementUnits = sV;
@@ -842,7 +857,7 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
             // shift the text). The banner PDFs are exactly one column wide, so
             // size a hair NARROWER — an inline object equal to the line width
             // oversets and spins fitOrThread into empty columns.
-            const hdrWidthPt = CONTENT_BLOCK.widthIn * 72 - 3;
+            const hdrWidthPt = CONTENT_BLOCK.widthIn * 72 - 1;
             for (let a = headerAnchors.length - 1; a >= 0; a--) {
               const { paraIdx, slug } = headerAnchors[a];
               await placeClassifiedHeader(id, doc, frame, paraIdx, headerUrls[slug], slug, hdrWidthPt);
