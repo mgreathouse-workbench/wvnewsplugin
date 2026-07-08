@@ -3,3 +3,4 @@ dist/
 *.ccx
 *.zip
 .DS_Store
+.build-plugin-tmp/

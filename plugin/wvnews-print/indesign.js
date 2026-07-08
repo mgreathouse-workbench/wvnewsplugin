@@ -272,18 +272,307 @@ function buildMarketplaceText(kind, items) {
       const block = [head, String(o.text || '').trim(), o.funeral].filter(Boolean).join('\n');
       if (block) lines.push(block);
     }
-  } else { // legals
+  } else { // legals — body text only; the title is not placed
     for (const l of items) {
-      const block = [l.title, String(l.text || '').trim()].filter(Boolean).join('\n');
+      const block = String(l.text || '').trim();
       if (block) lines.push(block);
     }
   }
   return { text: lines.join('\n'), headerIdx };
 }
 
+// Flatten a list of legals (each with a title + structured richText) into
+// one blocks array for applyRichTextToFrame — title as its own paragraph,
+// the notice's formatted paragraphs after it, and a blank paragraph between
+// notices. Falls back to a plain-text paragraph if an item lacks richText.
+function buildLegalBlocks(items) {
+  const blocks = [];
+  items.forEach((l, idx) => {
+    if (idx > 0) blocks.push({ align: 'left', runs: [{ text: '' }] });
+    // Title is intentionally not placed — body text only.
+    if (Array.isArray(l.richText) && l.richText.length) {
+      for (const b of l.richText) blocks.push(b);
+    } else if (l.text) {
+      blocks.push({ align: 'left', runs: [{ text: String(l.text) }] });
+    }
+  });
+  return blocks;
+}
+
+// Build classifieds as styled blocks: one paragraph per category header,
+// then one paragraph per ad with the Headline set BOLD as a lead-in
+// followed by the short description. Returns { blocks, headerIdx } so the
+// caller can also apply the category paragraph style to the header rows.
+function buildClassifiedBlocks(items) {
+  const blocks = [];
+  const headerIdx = [];
+  const byCat = new Map();
+  for (const it of items) {
+    const c = String(it.category || 'Classifieds').trim() || 'Classifieds';
+    if (!byCat.has(c)) byCat.set(c, []);
+    byCat.get(c).push(it);
+  }
+  const spacer = () => blocks.push({ align: 'left', runs: [{ text: '' }] });
+  let firstCat = true;
+  for (const cat of [...byCat.keys()].sort((a, b) => a.localeCompare(b))) {
+    // Blank line before each new category header (separates groups) —
+    // but not at the very top of the block.
+    if (!firstCat) spacer();
+    firstCat = false;
+    headerIdx.push(blocks.length);
+    blocks.push({ align: 'left', runs: [{ text: cat }] });
+    let firstInCat = true;
+    for (const it of byCat.get(cat)) {
+      const head = String(it.headline || '').trim();
+      const desc = String(it.text || '').trim();
+      const runs = [];
+      if (head) {
+        runs.push({ text: head, bold: true });
+        if (desc && desc.toLowerCase() !== head.toLowerCase()) runs.push({ text: '  ' + desc });
+      } else if (desc) {
+        runs.push({ text: desc });
+      }
+      if (!runs.length) continue;
+      // Hard return between listings within a category.
+      if (!firstInCat) spacer();
+      firstInCat = false;
+      blocks.push({ align: 'left', runs });
+    }
+  }
+  return { blocks, headerIdx };
+}
+
+// Build obits as styled blocks that flow in ONE threaded column, with an
+// empty "photo paragraph" at the top of each obit so a portrait can be
+// anchored inline there (see placeObitPhoto). Because applyRichTextToFrame
+// emits exactly one paragraph per block, the block index equals the final
+// paragraph index — so we record photoAnchors by block index.
+function buildObitBlocks(items) {
+  const blocks = [];
+  const photoAnchors = []; // { paraIdx, url }
+  let first = true;
+  for (const it of items) {
+    // Hard return between obits (matches the classifieds treatment).
+    if (!first) blocks.push({ align: 'left', runs: [{ text: '' }] });
+    first = false;
+    const url = String(it.photoUrl || '').trim();
+    if (url) {
+      // Empty, centered paragraph that the photo gets anchored into.
+      photoAnchors.push({ paraIdx: blocks.length, url });
+      blocks.push({ align: 'center', runs: [{ text: '' }] });
+    }
+    // Name (bold) + city on the lead line.
+    const name = String(it.name || '').trim();
+    const city = String(it.city || '').trim();
+    const lead = [];
+    if (name) lead.push({ text: name, bold: true });
+    if (city) lead.push({ text: (name ? ', ' : '') + city });
+    if (lead.length) blocks.push({ align: 'left', runs: lead });
+    // Body.
+    const body = String(it.text || '').trim();
+    if (body) blocks.push({ align: 'left', runs: [{ text: body }] });
+    // Funeral home / arrangements.
+    const funeral = String(it.funeral || '').trim();
+    if (funeral) blocks.push({ align: 'left', runs: [{ text: funeral }] });
+  }
+  return { blocks, photoAnchors };
+}
+
+// Download a portrait and anchor it INLINE into the empty photo paragraph at
+// `anchor.paraIdx`, sized to a column-wide portrait box. Non-fatal: on any
+// failure the obit still places as text. Call anchors in REVERSE paragraph
+// order so earlier insertion points stay valid as inline objects shift text.
+async function placeObitPhoto(id, doc, frame, anchor) {
+  try {
+    const story = frame.parentStory;
+    const para = story.paragraphs.item(anchor.paraIdx);
+    if (!para || !para.isValid) return;
+    const ip = para.insertionPoints.item(0);
+    const buf = await fetchBinary(anchor.url);
+    const ext = (anchor.url.split('?')[0].split('.').pop() || 'jpg').slice(0, 4);
+    const tempPath = await writeTemp(`obit-${anchor.paraIdx}.${ext}`, buf);
+    const placed = ip.place(tempPath);
+    const graphic = Array.isArray(placed) ? placed[0] : placed;
+    const gframe = graphic && graphic.parent; // the inline anchored rectangle
+    if (gframe) {
+      const wPt = CONTENT_BLOCK.widthIn * 72;
+      const hPt = wPt * OBIT_PHOTO_ASPECT;
+      const gb = gframe.geometricBounds; // [top, left, bottom, right]
+      gframe.geometricBounds = [gb[0], gb[1], gb[0] + hPt, gb[1] + wPt];
+      try { gframe.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+    }
+  } catch (e) {
+    console.warn('[wvnews-print] obit photo placement failed:', e?.message || e);
+  }
+}
+
 // Place a marketplace block (classifieds / legals / obits) into the
 // SELECTED text frame. Classifieds get one text header per category;
 // graphics are a later pass. Undo-wrapped like flowIntoSelectedFrame.
+// Standard 1-column content block for manually-placed marketplace content
+// (legals / classifieds / obits). The plugin creates the block frame itself
+// so content arrives WITH its block rather than needing a pre-drawn frame.
+//   width   1.6458 in (one newspaper column)
+//   font    Helvetica Neue 8pt / 8.5pt leading
+//   align   left-justified (justify, last line flush left)
+const CONTENT_BLOCK = { widthIn: 1.6458, font: 'Helvetica Neue', pointSize: 8, leading: 8.5 };
+
+// Obit portrait: a column-wide, portrait-ratio box the memorial photo is
+// anchored into at the top of each obit. FILL_PROPORTIONALLY fills + crops.
+const OBIT_PHOTO_ASPECT = 1.2; // height = width * 1.2 (portrait)
+
+// Content starts this far below the top of the page, leaving room for the
+// folio (running header / page line).
+const FOLIO_OFFSET_IN = 0.5884;
+
+// Newspaper column widths in inches (multi-column spans the gutters). Legals
+// carry a columnCount (1-4); the placed block is sized to match.
+const LEGAL_COLUMN_WIDTHS_IN = { 1: 1.6458, 2: 3.4167, 3: 5.1875, 4: 6.9583 };
+function legalColumnWidthIn(n) {
+  return LEGAL_COLUMN_WIDTHS_IN[Math.max(1, Math.min(4, Number(n) || 1))];
+}
+
+// Apply a solid black border of `pts` points to a frame (legal "Border" opt).
+function applyFrameBorder(id, doc, frame, pts) {
+  try {
+    const vp = doc.viewPreferences;
+    let saved = null;
+    try { saved = vp.strokeMeasurementUnits; vp.strokeMeasurementUnits = id.MeasurementUnits.POINTS; } catch (e) {}
+    try { frame.strokeWeight = pts; } catch (e) {}
+    try { frame.strokeColor = doc.swatches.itemByName('Black'); } catch (e) {}
+    // Align Stroke to Inside so the 1pt rule sits inside the frame bounds.
+    try { frame.strokeAlignment = id.StrokeAlignment.INSIDE_ALIGNMENT; } catch (e) {}
+    if (saved != null) { try { vp.strokeMeasurementUnits = saved; } catch (e) {} }
+  } catch (e) { console.warn('[wvnews-print] border failed:', e?.message || e); }
+}
+
+// Set a text frame's inset spacing [top, left, bottom, right] in POINTS.
+// insetSpacing is read in the doc's ruler units, so force points around it.
+function applyFrameInset(id, doc, frame, topPt, leftPt, bottomPt, rightPt) {
+  try {
+    const tfp = frame.textFramePreferences;
+    const vp = doc.viewPreferences;
+    let sH = null, sV = null;
+    try {
+      sH = vp.horizontalMeasurementUnits; sV = vp.verticalMeasurementUnits;
+      vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+      vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+    } catch { sH = null; }
+    try { tfp.insetSpacing = [topPt, leftPt, bottomPt, rightPt]; } catch (e) { console.warn('[wvnews-print] inset array rejected:', e?.message || e); }
+    if (sH != null) { try { vp.horizontalMeasurementUnits = sH; vp.verticalMeasurementUnits = sV; } catch { /* ignore */ } }
+  } catch (e) { console.warn('[wvnews-print] inset failed:', e?.message || e); }
+}
+
+// Create the content-block text frame at the active page's top-left margin,
+// sized to one column wide × the available column height. Works in points so
+// the width is exact regardless of the document's ruler units.
+function createContentBlockFrame(id, doc, page, widthIn) {
+  const vp = doc.viewPreferences;
+  const savedH = vp.horizontalMeasurementUnits;
+  const savedV = vp.verticalMeasurementUnits;
+  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+  try {
+    const b = page.bounds; // [y1, x1, y2, x2] in points
+    const mp = page.marginPreferences;
+    const mLeft = typeof mp.left === 'number' ? mp.left : 36;
+    const mBottom = typeof mp.bottom === 'number' ? mp.bottom : 36;
+    const top = b[0] + FOLIO_OFFSET_IN * 72; // below the folio
+    const left = b[1] + mLeft;
+    const widthPt = widthIn * 72;
+    const colHeight = (b[2] - b[0]) - FOLIO_OFFSET_IN * 72 - mBottom;
+    const heightPt = colHeight > 72 ? colHeight : 288; // full column, else 4"
+    return page.textFrames.add({ geometricBounds: [top, left, top + heightPt, left + widthPt] });
+  } finally {
+    vp.horizontalMeasurementUnits = savedH;
+    vp.verticalMeasurementUnits = savedV;
+  }
+}
+
+// Shrink/grow the frame's height to fit its text, keeping the 1-column width
+// fixed and the top-left corner anchored (so the block stays where it landed
+// and just trims the empty space below the copy).
+function fitFrameHeightToText(id, frame) {
+  try {
+    const tfp = frame.textFramePreferences;
+    tfp.autoSizingReferencePoint = id.AutoSizingReferenceEnum.TOP_LEFT_POINT;
+    tfp.autoSizingType = id.AutoSizingTypeEnum.HEIGHT_ONLY;
+  } catch (e) {
+    console.warn('[wvnews-print] auto-size-to-text failed:', e?.message || e);
+  }
+}
+
+// A content block may not exceed this height; longer copy threads into a
+// continuation box.
+const MAX_BLOCK_HEIGHT_IN = 20.35;
+
+// Cap a content block at MAX_BLOCK_HEIGHT_IN. If the copy fits, the frame
+// hugs its content (auto-size). If it overflows, add continuation frames to
+// the right and THREAD the text through them so the content flows onward.
+// `decorate` (optional) re-applies per-frame styling (border / inset / text
+// wrap) to each continuation frame so the look carries across the thread.
+function fitOrThread(id, doc, page, frame, widthIn, decorate, growLeft) {
+  const vp = doc.viewPreferences;
+  const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+  try {
+    const maxPt = MAX_BLOCK_HEIGHT_IN * 72;
+    const widthPt = widthIn * 72;
+    const GAP = 9;
+    let current = frame;
+    let nextLeft = null;
+    let guard = 0;
+    while (guard++ < 60) {
+      const gb = current.geometricBounds; // [top, left, bottom, right] in pts
+      // Next continuation grows right by default, or LEFT for right-anchored
+      // (multi-column) blocks so they stay on the page.
+      if (nextLeft == null) nextLeft = growLeft ? (gb[1] - GAP - widthPt) : (gb[3] + GAP);
+      // Pin to the cap so any overflow becomes detectable.
+      try { current.geometricBounds = [gb[0], gb[1], gb[0] + maxPt, gb[3]]; } catch (e) {}
+      let over = false;
+      try { over = !!current.overflows; } catch (e) { over = false; }
+      if (!over) {
+        // Fits within the cap → shrink to hug the content.
+        fitFrameHeightToText(id, current);
+        break;
+      }
+      // Overflows → continuation frame (threaded).
+      const top = gb[0];
+      const cont = page.textFrames.add({ geometricBounds: [top, nextLeft, top + maxPt, nextLeft + widthPt] });
+      nextLeft = growLeft ? (nextLeft - GAP - widthPt) : (nextLeft + widthPt + GAP);
+      if (decorate) { try { decorate(cont); } catch (e) {} }
+      try { current.nextTextFrame = cont; } catch (e) { break; }
+      current = cont;
+    }
+  } catch (e) { console.warn('[wvnews-print] cap/thread failed:', e?.message || e); }
+  finally {
+    vp.horizontalMeasurementUnits = sH;
+    vp.verticalMeasurementUnits = sV;
+  }
+}
+
+// Apply the block's base typography to a frame's whole story (font / size /
+// leading / uniform justification). Used for the plain-text marketplace kinds
+// (classifieds / obits); legals go through applyRichTextToFrame's baseFormat.
+function applyBlockFormat(id, frame, fmt) {
+  try {
+    const story = frame.parentStory;
+    const t = story.texts.item(0);
+    if (fmt.font)      { try { t.appliedFont = fmt.font; } catch (e) { console.warn('[wvnews-print] font not found:', fmt.font); } }
+    if (fmt.pointSize) { try { t.pointSize = fmt.pointSize; } catch (e) {} }
+    if (fmt.leading)   { try { t.leading = fmt.leading; } catch (e) {} }
+    // No indents on placed content.
+    try { t.leftIndent = 0; } catch (e) {}
+    try { t.rightIndent = 0; } catch (e) {}
+    try { t.firstLineIndent = 0; } catch (e) {}
+    if (fmt.justification != null) {
+      const paras = story.paragraphs;
+      for (let i = 0; i < paras.length; i++) { try { paras.item(i).justification = fmt.justification; } catch (e) {} }
+    }
+  } catch (e) { console.warn('[wvnews-print] applyBlockFormat skipped:', e?.message || e); }
+}
+
 async function placeMarketplaceBlock(kind, items, styleMap) {
   const id = host();
   if (!Array.isArray(items) || !items.length) throw new Error('Nothing available to place.');
@@ -291,25 +580,121 @@ async function placeMarketplaceBlock(kind, items, styleMap) {
     id.app.doScript(
       async () => {
         try {
-          const sel = id.app.selection;
-          if (!sel || !sel.length) throw new Error('Select a text frame first.');
-          const frame = sel[0];
-          const { text, headerIdx } = buildMarketplaceText(kind, items);
-          if (!text) throw new Error('Nothing to place.');
-          setFrameText(frame, text);
-          if (kind === 'classifieds' && headerIdx.length) {
+          const doc = activeDocument();
+          const win = doc.layoutWindows.length ? doc.layoutWindows[0] : null;
+          const page = win ? win.activePage : doc.pages.item(0);
+          const fmt = {
+            font: CONTENT_BLOCK.font,
+            pointSize: CONTENT_BLOCK.pointSize,
+            leading: CONTENT_BLOCK.leading,
+            justification: id.Justification.LEFT_JUSTIFIED,
+          };
+
+          // ── Legals ───────────────────────────────────────────────
+          // 1-column legals all flow into ONE shared block. Every legal
+          // wider than 1 column gets its OWN block, sized to its column
+          // width, with a 0.0625" text wrap and an optional 1pt border.
+          if (kind === 'legals') {
+            const oneCol = items.filter(l => (Number(l.columnCount) || 1) <= 1);
+            const multi  = items.filter(l => (Number(l.columnCount) || 1) > 1);
+
+            // Lay the blocks out left-to-right, computed in points.
+            const vp = doc.viewPreferences;
+            const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+            vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+            vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+            const plan = [];
             try {
-              const doc = activeDocument();
+              const b = page.bounds;
+              const mp = page.marginPreferences;
+              const mLeft = typeof mp.left === 'number' ? mp.left : 36;
+              const mRight = typeof mp.right === 'number' ? mp.right : 36;
+              const mBottom = typeof mp.bottom === 'number' ? mp.bottom : 36;
+              const top = b[0] + FOLIO_OFFSET_IN * 72; // below the folio
+              const colH = (b[2] - b[0]) - FOLIO_OFFSET_IN * 72 - mBottom;
+              const heightPt = colH > 72 ? colH : 288;
+              const GAP = 9;
+              // 1-column legals flow from the LEFT margin (and thread right).
+              let leftCursor = b[1] + mLeft;
+              const mkLeft = (wIn) => {
+                const wpt = wIn * 72;
+                const f = page.textFrames.add({ geometricBounds: [top, leftCursor, top + heightPt, leftCursor + wpt] });
+                leftCursor += wpt + GAP;
+                return f;
+              };
+              // Multi-column legals anchor to the RIGHT margin, stacking
+              // right-to-left, so they don't collide with the left-column flow.
+              let rightCursor = b[3] - mRight;
+              const mkRight = (wIn) => {
+                const wpt = wIn * 72;
+                const x = rightCursor - wpt;
+                const f = page.textFrames.add({ geometricBounds: [top, x, top + heightPt, x + wpt] });
+                rightCursor = x - GAP;
+                return f;
+              };
+              if (oneCol.length) plan.push({ frame: mkLeft(CONTENT_BLOCK.widthIn), widthIn: CONTENT_BLOCK.widthIn, legals: oneCol, multi: false, border: false });
+              for (const l of multi) {
+                const w = legalColumnWidthIn(l.columnCount);
+                plan.push({ frame: mkRight(w), widthIn: w, legals: [l], multi: true, border: !!l.border });
+              }
+            } finally {
+              vp.horizontalMeasurementUnits = sH;
+              vp.verticalMeasurementUnits = sV;
+            }
+            if (!plan.length) throw new Error('Nothing to place.');
+            for (const p of plan) {
+              const blocks = buildLegalBlocks(p.legals);
+              if (blocks.length) applyRichTextToFrame(id, p.frame, blocks, fmt);
+              // Per-frame styling for multi-column notices, re-applied to any
+              // continuation frames so the border/wrap carries across the thread.
+              const decorate = p.multi ? (f) => {
+                if (p.border) {
+                  applyFrameBorder(id, doc, f, 1);
+                  // Bordered notice: inset T0 / B0 / L0.0125" / R0.0125" (0.9pt).
+                  applyFrameInset(id, doc, f, 0, 0.9, 0, 0.9);
+                }
+                applyTextWrap(f, 4.5); // 0.0625 in standoff
+              } : null;
+              if (decorate) decorate(p.frame);
+              // Multi-column blocks sit at the right margin, so any overflow
+              // threads leftward to stay on the page.
+              fitOrThread(id, doc, page, p.frame, p.widthIn, decorate, p.multi);
+            }
+            resolve({ placed: items.length, frame: '' });
+            return;
+          }
+
+          // ── Classifieds / obits: a single 1-column block ─────────
+          const frame = createContentBlockFrame(id, doc, page, CONTENT_BLOCK.widthIn);
+          if (kind === 'classifieds') {
+            const { blocks, headerIdx } = buildClassifiedBlocks(items);
+            if (!blocks.length) throw new Error('Nothing to place.');
+            applyRichTextToFrame(id, frame, blocks, fmt);
+            try {
               const styleName = (styleMap && styleMap.paragraph && (styleMap.paragraph.classifiedHeader || styleMap.paragraph.classifiedCategory)) || 'Classified Category';
-              const style = doc && doc.paragraphStyles.itemByName(styleName);
+              const style = doc.paragraphStyles.itemByName(styleName);
               if (style && style.isValid) {
                 const paras = frame.parentStory.paragraphs;
                 for (const i of headerIdx) {
                   if (i < paras.length) paras.item(i).applyParagraphStyle(style, true);
                 }
               }
-            } catch (e) { console.warn('[wvnews-print] marketplace header styling skipped:', e?.message || e); }
+            } catch (e) { console.warn('[wvnews-print] classified header styling skipped:', e?.message || e); }
+            fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
+            resolve({ placed: items.length, frame: frame.name || '' });
+            return;
           }
+          // Obits: styled blocks in one threaded column, each with its
+          // portrait anchored inline at the top of the obit.
+          const { blocks, photoAnchors } = buildObitBlocks(items);
+          if (!blocks.length) throw new Error('Nothing to place.');
+          applyRichTextToFrame(id, frame, blocks, fmt);
+          // Anchor portraits LAST→FIRST so inserting each inline object
+          // doesn't shift the paragraph indices of anchors not yet placed.
+          for (let a = photoAnchors.length - 1; a >= 0; a--) {
+            await placeObitPhoto(id, doc, frame, photoAnchors[a]);
+          }
+          fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
           resolve({ placed: items.length, frame: frame.label || frame.name || '' });
         } catch (e) { reject(e); }
       },
@@ -1768,21 +2153,32 @@ function findLargestRectangle(items, classOf) {
   return best;
 }
 
-function applyTextWrap(frame) {
+function applyTextWrap(frame, offsetPt = 6) {
   if (!frame) return;
   try {
     const wrap = frame.textWrapPreferences;
     const idMod = host();
     wrap.textWrapMode = idMod.TextWrapModes.BOUNDING_BOX_TEXT_WRAP;
+    // textWrapOffset is interpreted in the document's RULER UNITS, not
+    // points — so force points around the assignment, otherwise e.g. 4.5
+    // becomes 4.5 inches when the doc is in inches. Save/restore units.
+    let vp = null, sH = null, sV = null;
+    try {
+      vp = activeDocument().viewPreferences;
+      sH = vp.horizontalMeasurementUnits; sV = vp.verticalMeasurementUnits;
+      vp.horizontalMeasurementUnits = idMod.MeasurementUnits.POINTS;
+      vp.verticalMeasurementUnits = idMod.MeasurementUnits.POINTS;
+    } catch { vp = null; }
     // The textWrapOffset property accepts either an array of 4 values
     // [top, left, bottom, right] or a single number applied to all
     // sides. Some UXP InDesign builds silently reject the array form,
     // so try array first then fall back to scalar.
     try {
-      wrap.textWrapOffset = [6, 6, 6, 6];
+      wrap.textWrapOffset = [offsetPt, offsetPt, offsetPt, offsetPt];
     } catch {
-      try { wrap.textWrapOffset = 6; } catch { /* give up */ }
+      try { wrap.textWrapOffset = offsetPt; } catch { /* give up */ }
     }
+    if (vp) { try { vp.horizontalMeasurementUnits = sH; vp.verticalMeasurementUnits = sV; } catch { /* ignore */ } }
     const lbl = (() => { try { return frame.label || frame.constructor?.name || '?'; } catch { return '?'; } })();
     console.log('[wvnews-print] text wrap applied:', lbl);
   } catch (e) {
@@ -3110,7 +3506,7 @@ function fontStyleName(bold, italic) {
 // on the platform for the source shape:
 //   blocks: [ { align: 'left'|'center'|'right'|'justify',
 //               runs: [ { text, bold, italic, underline }, ... ] }, ... ]
-function applyRichTextToFrame(id, frame, blocks) {
+function applyRichTextToFrame(id, frame, blocks, baseFormat = null) {
   const story = frame && frame.parentStory;
   if (!story || !Array.isArray(blocks) || !blocks.length) return false;
 
@@ -3135,10 +3531,23 @@ function applyRichTextToFrame(id, frame, blocks) {
     if (bi < blocks.length - 1) full += '\r';
   }
 
-  // Deliberately do NOT set appliedParagraphStyle — the legal-body frame's
-  // base style (font/size/leading) stays intact; we only override alignment
-  // + inline emphasis.
+  // Without a baseFormat we deliberately do NOT set appliedParagraphStyle —
+  // the target frame's base style stays intact; we only override alignment +
+  // inline emphasis. With a baseFormat (manual content block) we stamp the
+  // block's font/size/leading on the whole story FIRST, so the per-run
+  // bold/italic below combines with that family (e.g. Helvetica Neue Bold).
   story.contents = full;
+
+  if (baseFormat) {
+    const t = story.texts.item(0);
+    if (baseFormat.font)      { try { t.appliedFont = baseFormat.font; } catch (e) { console.warn('[wvnews-print] font not found:', baseFormat.font); } }
+    if (baseFormat.pointSize) { try { t.pointSize = baseFormat.pointSize; } catch (e) {} }
+    if (baseFormat.leading)   { try { t.leading = baseFormat.leading; } catch (e) {} }
+    // No indents on placed content.
+    try { t.leftIndent = 0; } catch (e) {}
+    try { t.rightIndent = 0; } catch (e) {}
+    try { t.firstLineIndent = 0; } catch (e) {}
+  }
 
   const JUST = {
     left:    id.Justification.LEFT_ALIGN,
@@ -3147,9 +3556,20 @@ function applyRichTextToFrame(id, frame, blocks) {
     justify: id.Justification.LEFT_JUSTIFIED,
   };
   const paras = story.paragraphs;
-  for (let bi = 0; bi < blocks.length && bi < paras.length; bi++) {
-    const j = JUST[blocks[bi].align];
-    if (j != null) { try { paras.item(bi).justification = j; } catch (e) { /* keep base */ } }
+  if (baseFormat && baseFormat.justification != null) {
+    // Default every paragraph to the block justification, but CARRY OVER
+    // center alignment from the source (centered is the only alignment we
+    // preserve; left/right/justify all fall back to the block default).
+    for (let i = 0; i < paras.length; i++) {
+      const centered = blocks[i] && blocks[i].align === 'center';
+      const j = centered ? id.Justification.CENTER_ALIGN : baseFormat.justification;
+      try { paras.item(i).justification = j; } catch (e) {}
+    }
+  } else {
+    for (let bi = 0; bi < blocks.length && bi < paras.length; bi++) {
+      const j = JUST[blocks[bi].align];
+      if (j != null) { try { paras.item(bi).justification = j; } catch (e) { /* keep base */ } }
+    }
   }
 
   // Inline character formatting. Each range is wrapped so one missing font
@@ -3173,13 +3593,11 @@ async function placeLegalAsset(page, spread, asset) {
     const f = frameByLabelOrName(c, 'legal-body') || frameByLabelOrName(c, 'classified-body');
     if (!f) continue;
     if (Array.isArray(asset.richText) && asset.richText.length) {
-      const blocks = [];
-      if (asset.title) blocks.push({ align: 'left', runs: [{ text: String(asset.title) }] });
-      for (const b of asset.richText) blocks.push(b);
+      // Title is intentionally not placed — body text only.
+      const blocks = asset.richText.slice();
       if (applyRichTextToFrame(id, f, blocks)) return;
     }
-    const body = [asset.title, asset.text].filter(Boolean).join('\n');
-    setFrameText(f, body);
+    setFrameText(f, String(asset.text || ''));
     return;
   }
   console.warn('[wvnews-print] no frame labeled "legal-body" for', asset.id);

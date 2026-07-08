@@ -146,3 +146,84 @@ label.field > .lbl { display: block; font-size: 10px; font-weight: 700;
            border: 2px solid #ccc; border-top-color: #2680eb;
            border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Edition calendar picker — UXP has no native <input type=date> popup, so
+   this is a custom Material-style modal dialog (see app.js renderDateDialog).
+   A modal (not an anchored popover) so it never clips against the panel. */
+.datepick { position: relative; }
+.datepick-trigger {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; padding: 6px 10px; font-size: 12px;
+  border: 1px solid #b3b3b3; border-radius: 4px;
+  background: #ffffff; color: #2c2c2c; cursor: pointer; text-align: left;
+}
+.datepick-trigger:hover { border-color: #2680eb; }
+.datepick-caret { color: #6b6b6b; font-size: 10px; margin-left: 8px; }
+
+/* Modal overlay + centered card */
+.datepick-overlay {
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex; align-items: center; justify-content: center; padding: 12px;
+}
+.datepick-dialog {
+  width: 100%; max-width: 320px;
+  background: #ffffff; border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+  padding: 14px 16px 10px;
+}
+.datepick-dlg-head { border-bottom: 1px solid #e4e4e4; padding-bottom: 10px; margin-bottom: 8px; }
+.datepick-dlg-label { font-size: 10px; color: #6b6b6b; }
+.datepick-dlg-headline { font-size: 22px; font-weight: 500; color: #2c2c2c; margin-top: 4px; }
+.datepick-dlg-monthrow { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 8px; }
+.datepick-monthbtn {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 12px; font-weight: 700; color: #2c2c2c; padding: 4px 6px; border-radius: 4px;
+}
+.datepick-monthbtn:hover { background: #f0f0f0; }
+.datepick-monthcaret { font-size: 9px; color: #6b6b6b; }
+.datepick-navs { display: flex; gap: 2px; }
+.datepick-nav {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 18px; line-height: 1; color: #2c2c2c; padding: 2px 8px; border-radius: 50%;
+}
+.datepick-nav:hover { background: #f0f0f0; }
+/* Flexbox (not CSS grid) — UXP's webview doesn't lay out display:grid. */
+.datepick-grid { display: flex; flex-wrap: wrap; }
+.datepick-cell {
+  flex: 0 0 14.2857%; max-width: 14.2857%; height: 32px;
+  display: flex; align-items: center; justify-content: center; font-size: 10px;
+}
+.datepick-cell.dow { color: #6b6b6b; font-weight: 700; height: 22px; }
+.datepick-day {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid transparent; background: transparent; cursor: pointer;
+  font-size: 12px; color: #2c2c2c; padding: 0;
+}
+.datepick-day:hover { background: #eaeaea; }
+.datepick-day.today { border-color: #2680eb; color: #2680eb; }
+.datepick-day.selected,
+.datepick-day.selected.today { background: #2680eb; color: #ffffff; border-color: #2680eb; }
+.datepick-yeargrid { display: flex; flex-wrap: wrap; }
+.datepick-year {
+  flex: 0 0 33.3333%; max-width: 33.3333%; text-align: center;
+  border: 1px solid transparent; background: transparent; cursor: pointer;
+  font-size: 13px; color: #2c2c2c; padding: 8px 0; border-radius: 16px;
+}
+.datepick-year:hover { background: #eaeaea; }
+.datepick-year.selected { background: #2680eb; color: #ffffff; }
+.datepick-dlg-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; padding-top: 6px; }
+.datepick-text-btn {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 12px; font-weight: 700; color: #2680eb; padding: 6px 12px; border-radius: 4px;
+}
+.datepick-text-btn:hover { background: #e8f1fd; }
+@media (prefers-color-scheme: dark) {
+  .datepick-trigger { background: #2a2a2a; border-color: #4a4a4a; color: #e1e1e1; }
+  .datepick-dialog { background: #2a2a2a; }
+  .datepick-dlg-head { border-bottom-color: #3a3a3a; }
+  .datepick-dlg-headline, .datepick-monthbtn, .datepick-nav, .datepick-day, .datepick-year { color: #e1e1e1; }
+  .datepick-monthbtn:hover, .datepick-nav:hover, .datepick-day:hover, .datepick-year:hover { background: #3a3a3a; }
+  .datepick-day.today { color: #5aa2f0; border-color: #5aa2f0; }
+  .datepick-day.selected, .datepick-day.selected.today { background: #2680eb; color: #ffffff; border-color: #2680eb; }
+}

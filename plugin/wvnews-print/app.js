@@ -89,7 +89,12 @@ const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 // Only ET is wired up so far; tabloid + SJ pubs will be added once
 // their layout configs and template assets land.
 const SITE_TO_PUB_PROFILE = {
+  // The sites feed returns canonical ids (`exponent-telegram`); keep the
+  // legacy `exponent`/`theet` slugs mapped too so auto-pagination resolves
+  // regardless of which tag reaches the plugin.
+  'exponent-telegram': 'exponent-daily',
   exponent: 'exponent-daily',
+  theet: 'exponent-daily',
   // For weekend ET we'd switch to 'exponent-weekend' based on day-of-week.
 };
 
@@ -117,6 +122,11 @@ const state = {
   sitesLoading: false,
   siteId: '',
   editionDate: todayISO(),
+  datePickerOpen: false,   // calendar modal open/closed (UXP has no native date popup)
+  datePickerView: null,    // { y, m } month currently shown in the calendar (m 0-based)
+  datePickerPending: null, // tentatively-selected date; committed only on OK
+  datePickerMode: 'days',  // 'days' | 'years' — what the dialog body shows
+  datePickerTarget: 'main',// which field the open picker drives: 'main' | 'pubform'
   budget: null,         // server response
   selectedAssetId: null,
   busy: false,
@@ -305,7 +315,7 @@ function renderMain() {
       </label>
       <label class="field" style="margin:0;">
         <span class="lbl">Edition</span>
-        <input type="date" id="date-sel" value="${state.editionDate}" />
+        ${renderDatePicker()}
       </label>
     </div>
     <div class="row" style="margin-bottom:8px;">
@@ -416,35 +426,9 @@ function renderMain() {
       })
       .catch(() => render());
   };
-  const pubDate = $('pubform-date');
-  if (pubDate) {
-    // UXP renders <input type="date"> as a plain text box and is flaky
-    // about firing `change`, so this is a YYYY-MM-DD text field. Mirror
-    // every keystroke into state and update the id-preview line directly
-    // (no full re-render — that would jump the cursor mid-typing).
-    // submitPubForm also reads the DOM value as a final safeguard.
-    const refreshPreview = () => {
-      const f = state.pubForm;
-      const el = $('pubform-idpreview');
-      if (!f || !el) return;
-      const site = state.sites.find(s => s.id === f.siteId);
-      const code = site?.code || '';
-      if (code && /^\d{4}-\d{2}-\d{2}$/.test(f.editionDate)) {
-        const pid = previewPubId(code, f.editionDate);
-        el.textContent = `→ ${pid}`;
-        el.style.color = '#6b6b6b';
-      } else {
-        el.textContent = code ? 'Enter the edition date as YYYY-MM-DD' : 'Pick a publication and enter the date as YYYY-MM-DD';
-        el.style.color = '#a04040';
-      }
-    };
-    const sync = () => {
-      if (state.pubForm) state.pubForm.editionDate = pubDate.value.trim();
-      refreshPreview();
-    };
-    pubDate.oninput = sync;
-    pubDate.onchange = sync;
-  }
+  // The create-edition date uses the shared calendar picker (target
+  // 'pubform'); bindDatePicker() wires it, and committing a date triggers a
+  // full re-render that refreshes the id-preview line below it.
   // Section editor
   const btnAddSec = $('btn-pubform-addsec');
   if (btnAddSec) btnAddSec.onclick = () => {
@@ -487,7 +471,7 @@ function renderMain() {
     };
   }
   $('site-sel').onchange = (e) => { state.siteId = e.target.value; render(); };
-  $('date-sel').onchange = (e) => { state.editionDate = e.target.value; render(); };
+  bindDatePicker();
   $('btn-load').onclick = () => refreshBudget();
   const btnReloadSites = $('btn-reload-sites');
   if (btnReloadSites) btnReloadSites.onclick = async () => { await loadSites(); render(); };
@@ -778,8 +762,7 @@ function renderEditionForm() {
       </label>
       <label class="field" style="margin-bottom:0;">
         <span class="lbl">Edition date</span>
-        <input type="text" id="pubform-date" inputmode="numeric" placeholder="YYYY-MM-DD" maxlength="10"
-          value="${escapeHtml(form.editionDate)}" ${isEdit ? 'disabled' : ''} />
+        ${renderDatePicker('pubform', { disabled: isEdit })}
       </label>
       <div id="pubform-idpreview" style="font-size:10px;margin-top:4px;font-family:monospace;color:${siteCode && /^\d{4}-\d{2}-\d{2}$/.test(form.editionDate) ? '#6b6b6b' : '#a04040'};">
         ${siteCode && /^\d{4}-\d{2}-\d{2}$/.test(form.editionDate)
@@ -1399,14 +1382,11 @@ function closePubForm() {
 async function submitPubForm() {
   const form = state.pubForm;
   if (!form) return;
-  // UXP's <input type="date"> (and sometimes <select>) don't reliably
-  // fire `change`, so the onchange mirror can miss the operator's pick.
-  // Read the live DOM values at submit time so we save what's actually
-  // in the fields, not the form's opening defaults. (Edit mode disables
-  // these inputs, so only sync for create.)
+  // UXP's <select> doesn't reliably fire `change`, so read the live site
+  // value at submit time. The edition date comes from the calendar picker,
+  // which commits straight to form.editionDate on OK — no DOM read needed.
+  // (Edit mode disables these, so only sync for create.)
   if (form.mode === 'create') {
-    const dateEl = $('pubform-date');
-    if (dateEl && dateEl.value) form.editionDate = dateEl.value;
     const siteEl = $('pubform-site');
     if (siteEl) form.siteId = siteEl.value;
   }
@@ -1799,6 +1779,197 @@ function todayISO() {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// ── Edition calendar picker ─────────────────────────────────────────
+// UXP's webview renders <input type="date"> as a plain text box with no
+// calendar popup, so we roll our own. It's a centered modal dialog
+// (Material-style: header + month grid of circular days + year picker +
+// Cancel/OK) — a modal instead of an anchored popover so it never clips
+// against the narrow panel. Fully state-driven (datePickerOpen / View /
+// Pending / Mode) so the 4s heartbeat re-render can't disturb it. Day
+// clicks update a PENDING date; it commits to editionDate only on OK.
+
+const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+const MONTHS_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WEEKDAYS_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DOW_LETTERS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+function parseISO(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? { y: +m[1], m: +m[2] - 1, d: +m[3] } : null;
+}
+function isoFrom(y, m, d) {
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+function viewFromISO(iso) {
+  const p = parseISO(iso) || parseISO(todayISO());
+  return { y: p.y, m: p.m };
+}
+function fmtHuman(iso) {
+  const p = parseISO(iso);
+  if (!p) return 'Pick a date';
+  const dt = new Date(p.y, p.m, p.d);
+  return `${WEEKDAYS_ABBR[dt.getDay()]}, ${MONTHS_ABBR[p.m]} ${p.d}, ${p.y}`;
+}
+function shiftMonth(delta) {
+  const v = state.datePickerView || viewFromISO(state.editionDate);
+  let m = v.m + delta, y = v.y;
+  if (m < 0) { m = 11; y -= 1; } else if (m > 11) { m = 0; y += 1; }
+  state.datePickerView = { y, m };
+}
+
+// Headline shown at the top of the dialog, e.g. "Mon, Aug 17". Year is
+// omitted here (it's always visible in the month/year row below).
+function fmtHeadline(iso) {
+  const p = parseISO(iso);
+  if (!p) return 'Pick a date';
+  const dt = new Date(p.y, p.m, p.d);
+  return `${WEEKDAYS_ABBR[dt.getDay()]}, ${MONTHS_ABBR[p.m]} ${p.d}`;
+}
+
+// The picker can drive two date fields: the main toolbar ('main') and the
+// create-edition form ('pubform'). Only one modal opens at a time, so we
+// just track which field is active and read/write the right slice of state.
+function pickerValue(target) {
+  return (target === 'pubform' ? (state.pubForm && state.pubForm.editionDate) : state.editionDate) || '';
+}
+function pickerCommit(target, iso) {
+  if (target === 'pubform') { if (state.pubForm) state.pubForm.editionDate = iso; }
+  else { state.editionDate = iso; }
+}
+function openDatePicker(target) {
+  state.datePickerTarget = target;
+  state.datePickerOpen = true;
+  state.datePickerPending = pickerValue(target) || todayISO();
+  state.datePickerView = viewFromISO(state.datePickerPending);
+  state.datePickerMode = 'days';
+  render();
+}
+
+function renderDatePicker(target = 'main', opts = {}) {
+  const cur = pickerValue(target);
+  const label = cur ? fmtHuman(cur) : 'Pick a date';
+  const dis = opts.disabled ? ' disabled' : '';
+  let html = `<div class="datepick">
+      <button type="button" class="datepick-trigger" id="date-trigger-${target}"${dis}>
+        <span>${escapeHtml(label)}</span>
+        <span class="datepick-caret">▾</span>
+      </button>`;
+  if (state.datePickerOpen && state.datePickerTarget === target) html += renderDateDialog();
+  html += `</div>`;
+  return html;
+}
+
+// Full-panel modal (centered card) — sidesteps the popover-clipping issue
+// and matches the familiar Material-style date dialog.
+function renderDateDialog() {
+  const pending = state.datePickerPending || pickerValue(state.datePickerTarget) || todayISO();
+  const view = state.datePickerView || viewFromISO(pending);
+  const mode = state.datePickerMode || 'days';
+  const body = mode === 'years' ? renderYearGrid(view) : renderMonthGrid(view, pending);
+  const navs = mode === 'days'
+    ? `<div class="datepick-navs">
+         <button type="button" class="datepick-nav" id="datepick-prev" title="Previous month">‹</button>
+         <button type="button" class="datepick-nav" id="datepick-next" title="Next month">›</button>
+       </div>`
+    : '';
+  return `<div class="datepick-overlay" id="datepick-overlay">
+      <div class="datepick-dialog" id="datepick-dialog">
+        <div class="datepick-dlg-head">
+          <div class="datepick-dlg-label">Select date</div>
+          <div class="datepick-dlg-headline">${escapeHtml(fmtHeadline(pending))}</div>
+        </div>
+        <div class="datepick-dlg-monthrow">
+          <button type="button" class="datepick-monthbtn" id="datepick-monthtoggle">
+            ${MONTHS_LONG[view.m]} ${view.y} <span class="datepick-monthcaret">${mode === 'years' ? '▴' : '▾'}</span>
+          </button>
+          ${navs}
+        </div>
+        ${body}
+        <div class="datepick-dlg-foot">
+          <button type="button" class="datepick-text-btn" id="datepick-cancel">Cancel</button>
+          <button type="button" class="datepick-text-btn primary" id="datepick-ok">OK</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderMonthGrid(view, pending) {
+  const { y, m } = view;
+  const startDow = new Date(y, m, 1).getDay();       // 0 = Sunday
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const todISO = todayISO();
+  const dow = DOW_LETTERS.map(w => `<div class="datepick-cell dow">${w}</div>`).join('');
+  let cells = '';
+  for (let i = 0; i < startDow; i++) cells += `<div class="datepick-cell"></div>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const cellISO = isoFrom(y, m, d);
+    const cls = ['datepick-day'];
+    if (cellISO === pending) cls.push('selected');
+    if (cellISO === todISO) cls.push('today');
+    cells += `<div class="datepick-cell"><button type="button" class="${cls.join(' ')}" data-pick-date="${cellISO}">${d}</button></div>`;
+  }
+  return `<div class="datepick-grid">${dow}</div><div class="datepick-grid">${cells}</div>`;
+}
+
+function renderYearGrid(view) {
+  const cur = view.y;
+  const start = cur - 6;
+  let cells = '';
+  for (let i = 0; i < 12; i++) {
+    const yr = start + i;
+    cells += `<button type="button" class="datepick-year${yr === cur ? ' selected' : ''}" data-pick-year="${yr}">${yr}</button>`;
+  }
+  return `<div class="datepick-yeargrid">${cells}</div>`;
+}
+
+function closeDatePicker() {
+  state.datePickerOpen = false;
+  state.datePickerMode = 'days';
+  render();
+}
+
+function bindDatePicker() {
+  for (const target of ['main', 'pubform']) {
+    const trigger = $(`date-trigger-${target}`);
+    if (trigger) trigger.onclick = () => openDatePicker(target);
+  }
+  // Click the dim backdrop (but not the card) to dismiss without committing.
+  const overlay = $('datepick-overlay');
+  if (overlay) overlay.onclick = (e) => { if (e.target === overlay) closeDatePicker(); };
+  // Month/year label toggles the year picker.
+  const monthToggle = $('datepick-monthtoggle');
+  if (monthToggle) monthToggle.onclick = () => {
+    state.datePickerMode = (state.datePickerMode === 'years') ? 'days' : 'years';
+    render();
+  };
+  const prev = $('datepick-prev');
+  if (prev) prev.onclick = () => { shiftMonth(-1); render(); };
+  const next = $('datepick-next');
+  if (next) next.onclick = () => { shiftMonth(1); render(); };
+  // Day click updates the PENDING selection (highlight + headline), no commit.
+  for (const el of document.querySelectorAll('[data-pick-date]')) {
+    el.onclick = () => { state.datePickerPending = el.getAttribute('data-pick-date'); render(); };
+  }
+  // Year click sets the visible year and returns to the day grid.
+  for (const el of document.querySelectorAll('[data-pick-year]')) {
+    el.onclick = () => {
+      const v = state.datePickerView || viewFromISO(state.datePickerPending);
+      state.datePickerView = { y: Number(el.getAttribute('data-pick-year')), m: v.m };
+      state.datePickerMode = 'days';
+      render();
+    };
+  }
+  const cancel = $('datepick-cancel');
+  if (cancel) cancel.onclick = () => closeDatePicker();
+  const ok = $('datepick-ok');
+  if (ok) ok.onclick = () => {
+    if (state.datePickerPending) pickerCommit(state.datePickerTarget, state.datePickerPending);
+    closeDatePicker();
+  };
 }
 
 function escapeHtml(s) {
