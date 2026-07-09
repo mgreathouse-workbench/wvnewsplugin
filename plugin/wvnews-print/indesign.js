@@ -342,8 +342,10 @@ function buildClassifiedBlocks(items, resolveHeaderSlug) {
   let firstCat = true;
   for (const cat of [...byCat.keys()].sort((a, b) => a.localeCompare(b))) {
     const slug = resolveHeaderSlug ? resolveHeaderSlug(cat) : null;
-    // Blank line before each new category (separates groups) — not at the top.
-    if (!firstCat) push({ align: 'left', runs: [{ text: '' }] }, cat);
+    // Blank line before each new category (separates groups) — not at the top,
+    // and not before a graphic header (the banner + its spaceBefore already
+    // separate it; an extra blank line was too much air).
+    if (!firstCat && !slug) push({ align: 'left', runs: [{ text: '' }] }, cat);
     firstCat = false;
     if (slug) {
       // Empty, centered paragraph the header graphic gets anchored into.
@@ -423,9 +425,9 @@ async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt
       // it collided with the listings. Make the banner's line tall enough and
       // add breathing room above/below.
       try {
-        para.leading = hPt + 4;
-        para.spaceBefore = 6;
-        para.spaceAfter = 6;
+        para.leading = hPt + 1;
+        para.spaceBefore = 2;
+        para.spaceAfter = 3;
       } catch (e) {}
     } finally {
       vp.horizontalMeasurementUnits = sH;
