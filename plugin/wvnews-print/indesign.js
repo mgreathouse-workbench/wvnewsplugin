@@ -397,44 +397,53 @@ function sizeClassifiedHeaderFrame(id, gframe, widthPt) {
 // at its native column width, which oversets the line and spins fitOrThread
 // into empty columns. The PDFs are ~5.06:1 (118.497 × 23.4).
 const HEADER_ASPECT = 23.3998 / 118.497; // height / width
+
+// Get/create the marker paragraph style for a category. Applied to each header
+// paragraph so its category survives even if the banner image is deleted — the
+// empty paragraph keeps the style, letting "Update Section Headers" restore it.
+function ensureHeaderStyle(id, doc, slug) {
+  const name = 'wvnhdr-' + slug;
+  try { const st = doc.paragraphStyles.itemByName(name); if (st && st.isValid) return st; } catch (e) {}
+  try { return doc.paragraphStyles.add({ name }); } catch (e) { return null; }
+}
+
+// Sync: mark `para` with the category style and anchor a header banner inline
+// into it from a prefetched temp file. Reliable pre-sized-frame pattern; forces
+// POINTS (geometricBounds read in the doc's ruler units).
+function _placeHeaderBannerSync(id, doc, para, tempPath, slug, widthPt) {
+  if (!para || !para.isValid || !tempPath) return;
+  const hPt = widthPt * HEADER_ASPECT;
+  const vp = doc.viewPreferences;
+  const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+  try {
+    try { const st = ensureHeaderStyle(id, doc, slug); if (st) para.appliedParagraphStyle = st; } catch (e) {}
+    const ip = para.insertionPoints.item(0);
+    const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, widthPt] });
+    try { rect.label = 'wvnhdr-start:' + slug; } catch (e) {}
+    try { rect.strokeWeight = 0; } catch (e) {}
+    try { rect.strokeColor = doc.swatches.itemByName('None'); } catch (e) {}
+    rect.place(tempPath);
+    try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+    try { para.leading = hPt; para.spaceBefore = 2; para.spaceAfter = 1; } catch (e) {}
+  } finally {
+    vp.horizontalMeasurementUnits = sH;
+    vp.verticalMeasurementUnits = sV;
+  }
+}
+
+// STEP 1 — anchor a category header PDF inline into its placeholder paragraph,
+// replacing the text header. Non-fatal. Fetches then delegates to the sync
+// placer (which also stamps the marker paragraph style).
 async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt) {
   try {
     const story = frame.parentStory;
     const para = story.paragraphs.item(paraIdx);
     if (!para || !para.isValid) return;
-    const ip = para.insertionPoints.item(0);
     const buf = await fetchBinary(url);
     const tempPath = await writeTemp(`hdr-${slug}.pdf`, buf);
-    const hPt = widthPt * HEADER_ASPECT;
-    // geometricBounds are read in the document's RULER units — force POINTS
-    // or a document set to inches turns [0,0,22.8,115.5] into a 115-INCH
-    // inline object that oversets and spins fitOrThread into empty columns.
-    const vp = doc.viewPreferences;
-    const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
-    vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
-    vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
-    try {
-      // Inline anchored rectangle, sized before the graphic lands in it.
-      const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, widthPt] });
-      // Tag as a category-START banner (flows with text; left alone on re-sync).
-      try { rect.label = 'wvnhdr-start:' + slug; } catch (e) {}
-      // No frame outline on the banner.
-      try { rect.strokeWeight = 0; } catch (e) {}
-      try { rect.strokeColor = doc.swatches.itemByName('None'); } catch (e) {}
-      rect.place(tempPath);
-      try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
-      // The story's base leading (8.5pt) is far shorter than the banner, so
-      // it collided with the listings. Make the banner's line tall enough and
-      // add breathing room above/below.
-      try {
-        para.leading = hPt;
-        para.spaceBefore = 2;
-        para.spaceAfter = 1;
-      } catch (e) {}
-    } finally {
-      vp.horizontalMeasurementUnits = sH;
-      vp.verticalMeasurementUnits = sV;
-    }
+    _placeHeaderBannerSync(id, doc, para, tempPath, slug, widthPt);
   } catch (e) {
     console.warn('[wvnews-print] classified header place failed:', e?.message || e);
   }
@@ -468,29 +477,37 @@ function _syncColumnHeaders(id, doc, frame, headerUrls) {
   try { cols = story.textContainers; } catch (e) { return { placed: 0 }; }
   if (!cols || !cols.length) return { placed: 0 };
 
-  // Derive category boundaries LIVE from the category-start banners still in
-  // the story, reading their CURRENT anchor position. This survives edits
-  // (deleting a banner, adding/removing text) that shift character offsets —
-  // the stored-offset approach went stale after any such edit. Falls back to
-  // the offsets recorded at placement only if no live banners are found.
-  let boundaries = [];
-  try {
-    const items = story.allPageItems || [];
-    for (const it of items) {
-      let lbl = '';
-      try { lbl = String(it.label || ''); } catch (e) {}
-      if (lbl.indexOf('wvnhdr-start:') !== 0) continue;
-      const slug = lbl.slice('wvnhdr-start:'.length);
-      let offset = -1;
-      try { offset = it.parent.index; } catch (e) {}       // anchoring character's story offset
-      if (offset < 0) { try { offset = it.storyOffset.index; } catch (e) {} }
-      if (offset >= 0 && slug) boundaries.push({ offset, slug });
+  const widthPt = CONTENT_BLOCK.widthIn * 72 - 1;
+
+  // Header paragraphs are marked with a 'wvnhdr-<slug>' paragraph style, which
+  // survives deleting the banner image — so we can both RESTORE missing start
+  // banners and re-derive boundaries from the paragraphs' CURRENT offsets.
+  function scanHeaderParas() {
+    const out = [];
+    let paras; try { paras = story.paragraphs; } catch (e) { return out; }
+    const n = paras.length;
+    for (let i = 0; i < n; i++) {
+      const p = paras.item(i);
+      let stName = '';
+      try { stName = String(p.appliedParagraphStyle.name || ''); } catch (e) {}
+      if (stName.indexOf('wvnhdr-') !== 0) continue;
+      out.push({ para: p, slug: stName.slice('wvnhdr-'.length) });
     }
-  } catch (e) { console.warn('[wvnews-print] live boundary scan failed:', e?.message || e); }
-  if (!boundaries.length) {
-    try { boundaries = JSON.parse(cols[0].extractLabel('wvnhdr-boundaries') || '[]'); } catch (e) {}
+    return out;
   }
-  boundaries.sort((a, b) => a.offset - b.offset);
+  // Story offsets that currently HAVE a start banner (labeled wvnhdr-start).
+  function bannerOffsetSet() {
+    const set = {};
+    try {
+      for (const it of (story.allPageItems || [])) {
+        let lbl = ''; try { lbl = String(it.label || ''); } catch (e) {}
+        if (lbl.indexOf('wvnhdr-start:') !== 0) continue;
+        let off = -1; try { off = it.parent.index; } catch (e) {}
+        if (off >= 0) set[off] = true;
+      }
+    } catch (e) {}
+    return set;
+  }
 
   const vp = doc.viewPreferences;
   const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
@@ -498,7 +515,29 @@ function _syncColumnHeaders(id, doc, frame, headerUrls) {
   vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
   let placed = 0;
   try {
-    // 1. Remove old column banners from every page these columns sit on.
+    // 1. RESTORE any deleted category-start banners. Reverse order — inserting
+    //    an inline object shifts later offsets.
+    let heads = scanHeaderParas();
+    const haveBanner = bannerOffsetSet();
+    for (let i = heads.length - 1; i >= 0; i--) {
+      const h = heads[i];
+      let off = -1; try { off = h.para.characters.item(0).index; } catch (e) {}
+      if (off >= 0 && haveBanner[off]) continue;       // banner already present
+      const tempPath = _sectionHeaderCache[h.slug];
+      if (!tempPath) continue;
+      _placeHeaderBannerSync(id, doc, h.para, tempPath, h.slug, widthPt);
+      placed++;
+    }
+
+    // 2. Re-derive boundaries from the (now-complete) header paragraphs.
+    const boundaries = [];
+    for (const h of scanHeaderParas()) {
+      let off = -1; try { off = h.para.characters.item(0).index; } catch (e) {}
+      if (off >= 0) boundaries.push({ offset: off, slug: h.slug });
+    }
+    boundaries.sort((a, b) => a.offset - b.offset);
+
+    // 3. Remove old column banners from every page these columns sit on.
     const pages = [];
     for (const c of cols) { try { if (c.parentPage && pages.indexOf(c.parentPage) < 0) pages.push(c.parentPage); } catch (e) {} }
     for (const pg of pages) {
@@ -508,9 +547,8 @@ function _syncColumnHeaders(id, doc, frame, headerUrls) {
       }
     }
 
-    // 2. For each column, find the category active at its top and place a
-    //    banner — unless the category STARTS exactly there (Step-1 banner
-    //    already present) or has no art.
+    // 4. For each column, place the active category's banner at its top —
+    //    unless the category STARTS there (start banner already present).
     for (let ci = 0; ci < cols.length; ci++) {
       const col = cols[ci];
       let colOffset;
@@ -518,18 +556,13 @@ function _syncColumnHeaders(id, doc, frame, headerUrls) {
       let active = null;
       for (const b of boundaries) { if (b.offset <= colOffset) active = b; else break; }
       if (!active || !active.slug) continue;
-      if (active.offset === colOffset) continue; // category starts here → Step-1 banner
-      const url = headerUrls[active.slug];
-      if (!url) continue;
+      if (active.offset === colOffset) continue; // category starts here → start banner
+      const tempPath = _sectionHeaderCache[active.slug];
+      if (!tempPath) continue;
       try {
         const b = col.geometricBounds; // [top, left, bottom, right]
         const wPt = b[3] - b[1];
         const hPt = wPt * HEADER_ASPECT;
-        // NOTE: fetchBinary is async; this function is sync (runs inside the
-        // caller's doScript). Prefetched blobs are cached by the caller —
-        // see _sectionHeaderCache.
-        const tempPath = _sectionHeaderCache[active.slug];
-        if (!tempPath) continue;
         const rect = col.parentPage
           ? col.parentPage.rectangles.add({ geometricBounds: [b[0], b[1], b[0] + hPt, b[3]] })
           : null;
