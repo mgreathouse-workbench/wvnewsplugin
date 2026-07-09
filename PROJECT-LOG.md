@@ -1,6 +1,6 @@
 # WVNews Print plugin — project log
 
-_Working record of the print-pagination build, so context lives with the repo. Last updated 2026-07-08._
+_Working record of the print-pagination build, so context lives with the repo. Last updated 2026-07-09._
 
 ---
 
@@ -138,6 +138,33 @@ Fields: classifieds/legals `targetPublications[]` + `publicationIds[]`; obits `t
 3. Classifieds — denormalize a computed run date (`startDate` + `weeks` + paper schedule) so they're edition-filterable.
 4. Ad orders & news stories — the big one: add `orders`/`stories` kinds to the marketplace endpoint with their `print.*` / `editionDate`+`printCuts` metadata.
 5. Normalize paper IDs first (`exponent` vs `exponent-telegram`) or cross-type pulls silently miss.
+
+---
+
+## Ad creation & scheduling — is publication/run-date set at creation? (2026-07-09 audit)
+
+For each print content type: where it's created, and whether a **publication** and a **run date** are assigned at creation vs. later.
+
+| Type | Created where | Publication at creation? | Run date at creation? |
+|---|---|---|---|
+| **Retail display ads** (`orders`) | **External CRM** (wvnews-crm), synced to Firestore | ❌ No — set later in `/admin/autopage` (`print.publicationId`/`print.paper`) | ❌ No — `runDates`/`startDate` optional, from CRM/later |
+| **Classified display ads** | *(same model as liners)* | ✅ Yes | ❌ No |
+| **Classified liners** (`classifieds`) | Public form / staff intake / voicemail / CRM | ✅ Yes — `publicationIds`+`targetPublications` | ❌ No — only `weeks` (1–26); real date only when autopage prints (`printedRunDate`) |
+| **Legal liners** (`legals`) | Public form / CER intake / detail editor | ✅ Yes — `publicationIds` (default `['wv-news']`) | ⚠️ Partial — `runsReq` yes, but **`firstRunDate` set later** by editor; dates computed via `nextLegalRunDates()` |
+| **Obituaries** (`obituaries`) | Public form (obit + death notice) / CER intake | ✅ Yes (paid; death notices default `wv-news`) | ✅ Optional — `printRunDate` from the submit form, hoisted to doc root |
+
+**Headlines:**
+- **Only obituaries** carry a real per-edition run date at creation (`printRunDate`, optional). Everything else has no date, a duration, or a date added later.
+- **"Classified display" is not a separate thing** — one `classifieds` model; display = flags `withPhoto`/`bold`/`featured`.
+- **Retail display ads aren't created in the platform at all** — authored in the external CRM; publication/page/date come from autopage.
+
+**Implications for print scheduling:**
+- Obits are cleanest to edition-schedule (real `printRunDate`).
+- Legals need an editor to set `firstRunDate` before they're edition-schedulable; then dates compute (one-run-per-week).
+- Classifieds have **no date model** — to place "this edition's classifieds" you must derive from `publishedAt` + `weeks` + paper schedule, or add a run-date field.
+- Retail display ads: the platform doesn't own their creation (CRM does).
+
+Key files: `src/lib/classifieds-db.js` (createClassifiedFromIntake), `src/lib/legals-db.js` + `src/lib/paper-names.js` (nextLegalRunDates), `src/app/api/submit/route.js` (obit `printRunDate` hoist ~L360), `src/app/admin/autopage/actions.js` (order publication/date assignment).
 
 ---
 
