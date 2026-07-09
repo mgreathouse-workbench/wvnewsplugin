@@ -1,7 +1,7 @@
 {
   "id": "com.wvnews.print",
   "name": "WVNews Print",
-  "version": "0.1.15",
+  "version": "0.1.14",
   "main": "index.html",
   "manifestVersion": 5,
   "host": {

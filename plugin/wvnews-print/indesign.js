@@ -789,42 +789,6 @@ function createContentBlockFrame(id, doc, page, widthIn) {
   }
 }
 
-// Classified liners now place into ONE text frame divided into N newspaper
-// columns of the classified column width — a single 6-up box the artist
-// manages as one object. Content flows through the internal columns.
-const CLASSIFIED_COL_COUNT = 6;
-const CLASSIFIED_COL_GUTTER_PT = 9; // 0.125"
-function createSixColumnBox(id, doc, page, cols) {
-  cols = cols || CLASSIFIED_COL_COUNT;
-  const vp = doc.viewPreferences;
-  const savedH = vp.horizontalMeasurementUnits, savedV = vp.verticalMeasurementUnits;
-  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
-  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
-  try {
-    const b = page.bounds; // [y1, x1, y2, x2] pts
-    const mp = page.marginPreferences;
-    const mLeft = typeof mp.left === 'number' ? mp.left : 36;
-    const mBottom = typeof mp.bottom === 'number' ? mp.bottom : 36;
-    const top = b[0] + FOLIO_OFFSET_IN * 72;
-    const left = b[1] + mLeft;
-    const colW = CONTENT_BLOCK.widthIn * 72;
-    const gutter = CLASSIFIED_COL_GUTTER_PT;
-    const widthPt = cols * colW + (cols - 1) * gutter;
-    const avail = (b[2] - b[0]) - FOLIO_OFFSET_IN * 72 - mBottom;
-    const heightPt = Math.min(avail > 72 ? avail : 288, MAX_BLOCK_HEIGHT_IN * 72);
-    const frame = page.textFrames.add({ geometricBounds: [top, left, top + heightPt, left + widthPt] });
-    try {
-      const tfp = frame.textFramePreferences;
-      tfp.textColumnCount = cols;
-      tfp.textColumnGutter = gutter;
-    } catch (e) { console.warn('[wvnews-print] set text columns failed:', e?.message || e); }
-    return frame;
-  } finally {
-    vp.horizontalMeasurementUnits = savedH;
-    vp.verticalMeasurementUnits = savedV;
-  }
-}
-
 // Shrink/grow the frame's height to fit its text, keeping the 1-column width
 // fixed and the top-left corner anchored (so the block stays where it landed
 // and just trims the empty space below the copy).
@@ -1000,9 +964,9 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
             return;
           }
 
-          // ── Classifieds: ONE box divided into 6 newspaper columns ─
+          // ── Classifieds / obits: a single 1-column block ─────────
+          const frame = createContentBlockFrame(id, doc, page, CONTENT_BLOCK.widthIn);
           if (kind === 'classifieds') {
-            const frame = createSixColumnBox(id, doc, page);
             // A category gets a header graphic only if art is available for it.
             const resolveHeaderSlug = (cat) => {
               if (!headerUrls) return null;
@@ -1042,8 +1006,7 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
               ];
               recordCategoryBoundaries(frame, catHeads);
             }
-            // Single 6-column box — no threading into separate frames. Content
-            // flows through the internal columns; overflow oversets the box.
+            fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
             // STEP 2: repeat the current category's header atop every column
             // (same engine the "Update Section Headers" button re-runs).
             if (headerUrls) {
@@ -1055,8 +1018,6 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
             resolve({ placed: items.length, frame: frame.name || '' });
             return;
           }
-          // Obits: single 1-column block that threads (unchanged).
-          const frame = createContentBlockFrame(id, doc, page, CONTENT_BLOCK.widthIn);
           // Obits: styled blocks in one threaded column, each with its
           // portrait anchored inline at the top of the obit.
           const { blocks, photoAnchors } = buildObitBlocks(items);
