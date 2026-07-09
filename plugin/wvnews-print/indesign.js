@@ -468,9 +468,28 @@ function _syncColumnHeaders(id, doc, frame, headerUrls) {
   try { cols = story.textContainers; } catch (e) { return { placed: 0 }; }
   if (!cols || !cols.length) return { placed: 0 };
 
-  // Stable category boundaries recorded at placement.
+  // Derive category boundaries LIVE from the category-start banners still in
+  // the story, reading their CURRENT anchor position. This survives edits
+  // (deleting a banner, adding/removing text) that shift character offsets —
+  // the stored-offset approach went stale after any such edit. Falls back to
+  // the offsets recorded at placement only if no live banners are found.
   let boundaries = [];
-  try { boundaries = JSON.parse(cols[0].extractLabel('wvnhdr-boundaries') || '[]'); } catch (e) {}
+  try {
+    const items = story.allPageItems || [];
+    for (const it of items) {
+      let lbl = '';
+      try { lbl = String(it.label || ''); } catch (e) {}
+      if (lbl.indexOf('wvnhdr-start:') !== 0) continue;
+      const slug = lbl.slice('wvnhdr-start:'.length);
+      let offset = -1;
+      try { offset = it.parent.index; } catch (e) {}       // anchoring character's story offset
+      if (offset < 0) { try { offset = it.storyOffset.index; } catch (e) {} }
+      if (offset >= 0 && slug) boundaries.push({ offset, slug });
+    }
+  } catch (e) { console.warn('[wvnews-print] live boundary scan failed:', e?.message || e); }
+  if (!boundaries.length) {
+    try { boundaries = JSON.parse(cols[0].extractLabel('wvnhdr-boundaries') || '[]'); } catch (e) {}
+  }
   boundaries.sort((a, b) => a.offset - b.offset);
 
   const vp = doc.viewPreferences;
