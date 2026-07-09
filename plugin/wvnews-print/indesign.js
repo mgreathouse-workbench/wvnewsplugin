@@ -416,6 +416,8 @@ async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt
     try {
       // Inline anchored rectangle, sized before the graphic lands in it.
       const rect = ip.rectangles.add({ geometricBounds: [0, 0, hPt, widthPt] });
+      // Tag as a category-START banner (flows with text; left alone on re-sync).
+      try { rect.label = 'wvnhdr-start:' + slug; } catch (e) {}
       // No frame outline on the banner.
       try { rect.strokeWeight = 0; } catch (e) {}
       try { rect.strokeColor = doc.swatches.itemByName('None'); } catch (e) {}
@@ -438,66 +440,142 @@ async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt
   }
 }
 
-// STEP 2 — repeat the current category's header at the TOP of every column.
-// After threading, each continuation column starts mid-category; drop an
-// overlay header banner at its top (and nudge the column's top inset down so
-// the first listing clears it). Guarded end-to-end: any failure leaves the
-// Step-1 result intact. Needs in-InDesign verification/tuning.
-async function repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTopSet) {
+// Record each category's boundary as a STABLE story character offset, stored
+// on the story's first frame. Reshaping columns changes which characters are
+// visible per column, NOT their story offsets — so these boundaries stay
+// valid and let _syncColumnHeaders re-place column-top banners for any layout.
+// catHeads: [{ paraIdx, slug|null }] one per category header paragraph.
+function recordCategoryBoundaries(frame, catHeads) {
+  try {
+    const st = frame.parentStory;
+    const boundaries = catHeads.map(h => {
+      let offset = -1;
+      try { offset = st.paragraphs.item(h.paraIdx).characters.item(0).index; } catch (e) {}
+      return { offset, slug: h.slug || null };
+    }).filter(b => b.offset >= 0).sort((a, b) => a.offset - b.offset);
+    frame.insertLabel('wvnhdr-boundaries', JSON.stringify(boundaries));
+  } catch (e) { console.warn('[wvnews-print] boundary record failed:', e?.message || e); }
+}
+
+// Repeat the active category's header banner at the TOP of every column,
+// derived from the CURRENT column layout — so it re-syncs after the artist
+// reshapes columns. Removes previously-placed column banners first (tagged
+// 'wvnhdr-col') so re-runs don't stack. The category-START banners (Step 1,
+// inline, tagged 'wvnhdr-start') flow with the text and are left alone.
+function _syncColumnHeaders(id, doc, frame, headerUrls) {
   const story = frame.parentStory;
   let cols;
-  try { cols = story.textContainers; } catch (e) { return; }
-  if (!cols || cols.length <= 1) return; // single column → nothing to repeat
+  try { cols = story.textContainers; } catch (e) { return { placed: 0 }; }
+  if (!cols || !cols.length) return { placed: 0 };
 
-  // Snapshot each continuation column's top category BEFORE mutating insets.
-  const plan = [];
-  for (let ci = 1; ci < cols.length; ci++) {
-    try {
-      const col = cols[ci];
-      const p = col.texts.item(0).paragraphs.item(0);
-      const idx = p.index;
-      if (idx == null || idx < 0 || idx >= paraCat.length) continue;
-      if (anchorTopSet && anchorTopSet.has(idx)) continue; // header already at this top
-      const slug = categoryHeaderSlug(paraCat[idx]);
-      const url = slug && headerUrls[slug];
-      if (!url) continue;
-      plan.push({ col, url, slug });
-    } catch (e) { /* skip this column */ }
-  }
+  // Stable category boundaries recorded at placement.
+  let boundaries = [];
+  try { boundaries = JSON.parse(cols[0].extractLabel('wvnhdr-boundaries') || '[]'); } catch (e) {}
+  boundaries.sort((a, b) => a.offset - b.offset);
 
   const vp = doc.viewPreferences;
   const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
   vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
   vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+  let placed = 0;
   try {
-    for (const { col, url, slug } of plan) {
+    // 1. Remove old column banners from every page these columns sit on.
+    const pages = [];
+    for (const c of cols) { try { if (c.parentPage && pages.indexOf(c.parentPage) < 0) pages.push(c.parentPage); } catch (e) {} }
+    for (const pg of pages) {
+      let rects; try { rects = pg.rectangles; } catch (e) { continue; }
+      for (let i = rects.length - 1; i >= 0; i--) {
+        try { if (String(rects.item(i).label || '').indexOf('wvnhdr-col') === 0) rects.item(i).remove(); } catch (e) {}
+      }
+    }
+
+    // 2. For each column, find the category active at its top and place a
+    //    banner — unless the category STARTS exactly there (Step-1 banner
+    //    already present) or has no art.
+    for (let ci = 0; ci < cols.length; ci++) {
+      const col = cols[ci];
+      let colOffset;
+      try { colOffset = col.characters.item(0).index; } catch (e) { continue; }
+      let active = null;
+      for (const b of boundaries) { if (b.offset <= colOffset) active = b; else break; }
+      if (!active || !active.slug) continue;
+      if (active.offset === colOffset) continue; // category starts here → Step-1 banner
+      const url = headerUrls[active.slug];
+      if (!url) continue;
       try {
         const b = col.geometricBounds; // [top, left, bottom, right]
         const wPt = b[3] - b[1];
         const hPt = wPt * HEADER_ASPECT;
-        const buf = await fetchBinary(url);
-        const tempPath = await writeTemp(`hdrcol-${slug}.pdf`, buf);
+        // NOTE: fetchBinary is async; this function is sync (runs inside the
+        // caller's doScript). Prefetched blobs are cached by the caller —
+        // see _sectionHeaderCache.
+        const tempPath = _sectionHeaderCache[active.slug];
+        if (!tempPath) continue;
         const rect = col.parentPage
           ? col.parentPage.rectangles.add({ geometricBounds: [b[0], b[1], b[0] + hPt, b[3]] })
           : null;
         if (!rect) continue;
+        rect.label = 'wvnhdr-col:' + active.slug;
         try { rect.strokeWeight = 0; } catch (e) {}
         try { rect.strokeColor = doc.swatches.itemByName('None'); } catch (e) {}
         rect.place(tempPath);
         try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
-        // Make room so the listing text starts below the banner.
         try {
           const tfp = col.textFramePreferences;
           const inset = tfp.insetSpacing;
           if (Array.isArray(inset)) { inset[0] = hPt + 3; tfp.insetSpacing = inset; }
           else tfp.insetSpacing = [hPt + 3, 0, 0, 0];
         } catch (e) {}
+        placed++;
       } catch (e) { console.warn('[wvnews-print] column header skipped:', e?.message || e); }
     }
   } finally {
     vp.horizontalMeasurementUnits = sH;
     vp.verticalMeasurementUnits = sV;
   }
+  return { placed };
+}
+
+// Temp-file cache of downloaded header PDFs, keyed by slug. Populated before
+// entering a doScript so _syncColumnHeaders (sync) can place without awaiting.
+let _sectionHeaderCache = {};
+async function prefetchSectionHeaders(headerUrls, slugs) {
+  _sectionHeaderCache = {};
+  for (const slug of slugs) {
+    const url = headerUrls && headerUrls[slug];
+    if (!url) continue;
+    try {
+      const buf = await fetchBinary(url);
+      _sectionHeaderCache[slug] = await writeTemp(`hdrcol-${slug}.pdf`, buf);
+    } catch (e) { console.warn('[wvnews-print] prefetch header failed:', slug, e?.message || e); }
+  }
+}
+
+// Public: re-sync classified column headers to the CURRENT column layout.
+// The artist selects any frame in the classified thread, reshapes columns,
+// then calls this to move/repeat the banners to each column's new top.
+async function updateSectionHeaders(headerUrls) {
+  const id = host();
+  // Prefetch every available header PDF up front (async), so the in-transaction
+  // placement is synchronous.
+  await prefetchSectionHeaders(headerUrls, Object.keys(headerUrls || {}));
+  return await new Promise((resolve, reject) => {
+    id.app.doScript(
+      () => {
+        try {
+          const sel = id.app.selection;
+          if (!sel || !sel.length) throw new Error('Select a frame in the classified section first.');
+          let frame = sel[0];
+          if (!frame.parentStory) throw new Error('Select a text frame in the classified section.');
+          const doc = activeDocument();
+          const res = _syncColumnHeaders(id, doc, frame, headerUrls);
+          resolve(res);
+        } catch (e) { reject(e); }
+      },
+      id.ScriptLanguage.UXPSCRIPT, undefined, id.UndoModes.ENTIRE_SCRIPT,
+      `WVNews Print: update section headers`,
+    );
+  });
 }
 
 // Build obits as styled blocks that flow in ONE threaded column, with an
@@ -867,12 +945,23 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
               const { paraIdx, slug } = headerAnchors[a];
               await placeClassifiedHeader(id, doc, frame, paraIdx, headerUrls[slug], slug, hdrWidthPt);
             }
-            fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
-            // STEP 2: repeat the current category's header atop every column.
+            // Record stable category boundaries so "Update Section Headers"
+            // can re-sync column banners after the artist reshapes columns.
             if (headerUrls) {
-              const anchorTops = new Set(headerAnchors.map(h => h.paraIdx));
-              try { await repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTops); }
-              catch (e) { console.warn('[wvnews-print] column header repeat skipped:', e?.message || e); }
+              const catHeads = [
+                ...headerAnchors.map(a => ({ paraIdx: a.paraIdx, slug: a.slug })),
+                ...headerIdx.map(i => ({ paraIdx: i, slug: null })),
+              ];
+              recordCategoryBoundaries(frame, catHeads);
+            }
+            fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
+            // STEP 2: repeat the current category's header atop every column
+            // (same engine the "Update Section Headers" button re-runs).
+            if (headerUrls) {
+              try {
+                await prefetchSectionHeaders(headerUrls, Object.keys(headerUrls));
+                _syncColumnHeaders(id, doc, frame, headerUrls);
+              } catch (e) { console.warn('[wvnews-print] column header repeat skipped:', e?.message || e); }
             }
             resolve({ placed: items.length, frame: frame.name || '' });
             return;
@@ -4171,6 +4260,7 @@ async function closePageDoc(doc) {
 
 module.exports = {
   placeTemplate, flowIntoSelectedFrame, placePhotoInSelection, placeMarketplaceBlock,
+  updateSectionHeaders,
   flowFullStoryIntoLabelledFrames, threadAndJump,
   captureSourceForJump, completeJumpToFrame,
   placeStoryIntoSelectedFrame,

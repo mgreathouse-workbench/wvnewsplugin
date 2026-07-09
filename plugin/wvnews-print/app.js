@@ -69,6 +69,7 @@ const {
 } = require('./api.js');
 const {
   placeTemplate, flowIntoSelectedFrame, placePhotoInSelection, placeMarketplaceBlock,
+  updateSectionHeaders,
   flowFullStoryIntoLabelledFrames, threadAndJump,
   captureSourceForJump, completeJumpToFrame,
   placeStoryIntoSelectedFrame,
@@ -358,6 +359,8 @@ function renderMain() {
   // Marketplace tab: refresh counts + per-kind place buttons.
   const btnMktRefresh = $('btn-mkt-refresh');
   if (btnMktRefresh) btnMktRefresh.onclick = () => refreshMarketplace();
+  const btnSyncHdr = $('btn-mkt-synchdr');
+  if (btnSyncHdr) btnSyncHdr.onclick = () => onUpdateSectionHeaders();
   for (const el of document.querySelectorAll('[data-mkt-place]')) {
     el.onclick = () => onPlaceMarketplace(el.getAttribute('data-mkt-place'));
   }
@@ -613,6 +616,11 @@ function renderMarketplaceView() {
       <button class="secondary" id="btn-mkt-refresh">↻ Refresh</button>
     </div>
     ${row('classifieds', 'Classifieds')}
+    <div class="row" style="margin:-2px 0 8px;justify-content:flex-end;">
+      <button class="secondary" id="btn-mkt-synchdr" ${state.busy ? 'disabled' : ''}
+        title="After reshaping the classified columns, select a frame in the section and click to move the category banners to each column's new top.">
+        ⟳ Update Section Headers</button>
+    </div>
     ${row('legals', 'Legals')}
     ${row('obits', 'Obituaries')}
   `;
@@ -657,6 +665,25 @@ async function onPlaceMarketplace(kind) {
     }
     const res = await placeMarketplaceBlock(kind, items, null, headerUrls);
     state.info = `Placed ${res.placed} ${kind} into ${res.frame || 'the selected frame'}.`;
+  } catch (err) {
+    state.error = err.message;
+  } finally {
+    state.busy = false; render();
+  }
+}
+
+// Re-sync classified column headers to the CURRENT column layout — the
+// artist reshapes columns, selects a frame in the section, clicks this.
+async function onUpdateSectionHeaders() {
+  state.error = ''; state.info = ''; state.busy = true; render();
+  try {
+    let headerUrls = {};
+    try {
+      const sh = await fetchSectionHeaders();
+      for (const h of (sh && sh.headers) || []) headerUrls[h.slug] = h.url;
+    } catch (e) { /* no art → nothing to sync */ }
+    const res = await updateSectionHeaders(headerUrls);
+    state.info = `Re-synced ${res.placed} column header${res.placed === 1 ? '' : 's'} to the current layout.`;
   } catch (err) {
     state.error = err.message;
   } finally {
