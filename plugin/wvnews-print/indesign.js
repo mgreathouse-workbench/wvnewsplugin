@@ -474,20 +474,23 @@ async function repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTo
       try {
         const b = col.geometricBounds; // [top, left, bottom, right]
         const wPt = b[3] - b[1];
+        const hPt = wPt * HEADER_ASPECT;
         const buf = await fetchBinary(url);
         const tempPath = await writeTemp(`hdrcol-${slug}.pdf`, buf);
         const rect = col.parentPage
-          ? col.parentPage.rectangles.add({ geometricBounds: [b[0], b[1], b[0] + wPt * 0.2, b[3]] })
+          ? col.parentPage.rectangles.add({ geometricBounds: [b[0], b[1], b[0] + hPt, b[3]] })
           : null;
         if (!rect) continue;
+        try { rect.strokeWeight = 0; } catch (e) {}
+        try { rect.strokeColor = doc.swatches.itemByName('None'); } catch (e) {}
         rect.place(tempPath);
-        const hPt = sizeClassifiedHeaderFrame(id, rect, wPt);
+        try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
         // Make room so the listing text starts below the banner.
         try {
           const tfp = col.textFramePreferences;
           const inset = tfp.insetSpacing;
-          if (Array.isArray(inset)) { inset[0] = hPt + 2; tfp.insetSpacing = inset; }
-          else tfp.insetSpacing = [hPt + 2, 0, 0, 0];
+          if (Array.isArray(inset)) { inset[0] = hPt + 3; tfp.insetSpacing = inset; }
+          else tfp.insetSpacing = [hPt + 3, 0, 0, 0];
         } catch (e) {}
       } catch (e) { console.warn('[wvnews-print] column header skipped:', e?.message || e); }
     }
@@ -865,14 +868,12 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
               await placeClassifiedHeader(id, doc, frame, paraIdx, headerUrls[slug], slug, hdrWidthPt);
             }
             fitOrThread(id, doc, page, frame, CONTENT_BLOCK.widthIn, null);
-            // STEP 2 (repeat header atop every column) is temporarily DISABLED
-            // pending in-InDesign verification of Step 1 — re-enable once the
-            // inline placement is confirmed clean.
-            // if (headerUrls) {
-            //   const anchorTops = new Set(headerAnchors.map(h => h.paraIdx));
-            //   try { await repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTops); }
-            //   catch (e) { console.warn('[wvnews-print] column header repeat skipped:', e?.message || e); }
-            // }
+            // STEP 2: repeat the current category's header atop every column.
+            if (headerUrls) {
+              const anchorTops = new Set(headerAnchors.map(h => h.paraIdx));
+              try { await repeatColumnHeaders(id, doc, frame, paraCat, headerUrls, anchorTops); }
+              catch (e) { console.warn('[wvnews-print] column header repeat skipped:', e?.message || e); }
+            }
             resolve({ placed: items.length, frame: frame.name || '' });
             return;
           }
