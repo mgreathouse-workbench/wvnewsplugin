@@ -427,9 +427,9 @@ async function placeClassifiedHeader(id, doc, frame, paraIdx, url, slug, widthPt
       // it collided with the listings. Make the banner's line tall enough and
       // add breathing room above/below.
       try {
-        para.leading = hPt + 1;
+        para.leading = hPt;
         para.spaceBefore = 2;
-        para.spaceAfter = 3;
+        para.spaceAfter = 1;
       } catch (e) {}
     } finally {
       vp.horizontalMeasurementUnits = sH;
@@ -523,8 +523,8 @@ function _syncColumnHeaders(id, doc, frame, headerUrls) {
         try {
           const tfp = col.textFramePreferences;
           const inset = tfp.insetSpacing;
-          if (Array.isArray(inset)) { inset[0] = hPt + 3; tfp.insetSpacing = inset; }
-          else tfp.insetSpacing = [hPt + 3, 0, 0, 0];
+          if (Array.isArray(inset)) { inset[0] = hPt + 1; tfp.insetSpacing = inset; }
+          else tfp.insetSpacing = [hPt + 1, 0, 0, 0];
         } catch (e) {}
         placed++;
       } catch (e) { console.warn('[wvnews-print] column header skipped:', e?.message || e); }
