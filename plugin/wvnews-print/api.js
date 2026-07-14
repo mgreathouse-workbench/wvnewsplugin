@@ -50,6 +50,18 @@ async function recordPlacement(placement) {
   });
 }
 
+async function deletePlacement(id) {
+  return await call(`/api/print/placements?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// Flip the given display-ad orders to Published for an edition (Publish Page).
+async function publishAds({ editionId, orderIds }) {
+  return await call(`/api/print/ads/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ editionId, orderIds }),
+  });
+}
+
 // Hosts we trust to serve binaries the plugin will write to disk and
 // hand to InDesign. Mirrors the manifest's network.domains: own backend
 // (any port, dev or prod), Firebase Storage, and bare GCS. Anything
@@ -327,7 +339,7 @@ async function fetchPageBinary(downloadUrl) {
 }
 
 module.exports = {
-  fetchSites, fetchBudget, listTemplates, getTemplate, recordPlacement, fetchBinary,
+  fetchSites, fetchBudget, listTemplates, getTemplate, recordPlacement, deletePlacement, publishAds, fetchBinary,
   listSnippets, getSnippet, downloadSnippetBinary,
   getPublicationTemplate, downloadPublicationTemplateBinary, fetchStyleMap,
   listEditions, getEdition, updateEditionStatus, fetchAssetContent,

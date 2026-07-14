@@ -3763,6 +3763,82 @@ async function placeOrderAsset(page, spread, asset) {
   console.warn('[wvnews-print] no frame labeled "ad" for order', asset.id);
 }
 
+// ── Marketplace display-ad placement ─────────────────────────────────
+// The marketplace flow drops a STANDALONE display ad (unlike placeOrderAsset,
+// which fills a pre-labeled 'ad' frame in a template snippet). Create a new
+// rectangle sized to the ad's real widthIn×heightIn, place the print-ready
+// artwork, label it `order-<id>` so Publish Page can find it later, and return
+// the coordinates for the placement record.
+async function placeAdSized(asset) {
+  if (!asset || !asset.fileUrl) throw new Error('This ad has no print-ready artwork to place.');
+  const id = host();
+  return await new Promise((resolve, reject) => {
+    id.app.doScript(
+      async () => {
+        try {
+          const doc = activeDocument();
+          const win = doc.layoutWindows.length ? doc.layoutWindows[0] : null;
+          const page = win ? win.activePage : doc.pages.item(0);
+          const wPt = (Number(asset.widthIn) || 5) * 72;
+          const hPt = (Number(asset.heightIn) || 5) * 72;
+          const buf = await fetchBinary(asset.fileUrl);
+          const ext = (String(asset.fileUrl).split('?')[0].split('.').pop() || 'png').slice(0, 4);
+          const tempPath = await writeTemp(`order-${asset.id}.${ext}`, buf);
+          const frameLabel = `order-${asset.id}`;
+          const vp = doc.viewPreferences;
+          const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+          vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+          vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+          try {
+            const b = page.bounds; // [y1, x1, y2, x2] in points
+            const mp = page.marginPreferences;
+            const mLeft = typeof mp.left === 'number' ? mp.left : 36;
+            const top = b[0] + FOLIO_OFFSET_IN * 72; // below the folio
+            const left = b[1] + mLeft;
+            const rect = page.rectangles.add({ geometricBounds: [top, left, top + hPt, left + wPt] });
+            try { rect.label = frameLabel; } catch (e) {}
+            try { rect.strokeWeight = 0; } catch (e) {}
+            rect.place(tempPath);
+            try { rect.fit(id.FitOptions.FILL_PROPORTIONALLY); } catch (e) {}
+          } finally {
+            vp.horizontalMeasurementUnits = sH;
+            vp.verticalMeasurementUnits = sV;
+          }
+          resolve({ placed: 1, page: page.name, frameLabel });
+        } catch (e) { reject(e); }
+      },
+      id.ScriptLanguage.UXPSCRIPT, undefined,
+      id.UndoModes.ENTIRE_SCRIPT, 'Place display ad',
+    );
+  });
+}
+
+// Order ids of the ad frames (label `order-<id>`) on the active page + its
+// spread — the set that Publish Page commits.
+function placedAdOrderIdsOnActivePage() {
+  const out = [];
+  const seen = new Set();
+  try {
+    const doc = activeDocument();
+    const win = doc.layoutWindows.length ? doc.layoutWindows[0] : null;
+    const page = win ? win.activePage : doc.pages.item(0);
+    for (const c of [page, page.parent]) {
+      for (const it of (c.allPageItems || [])) {
+        try {
+          const m = String(it.label || '').match(/^order-(.+)$/);
+          if (m && !seen.has(m[1])) { seen.add(m[1]); out.push(m[1]); }
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+  return out;
+}
+
+// Page count of the active document (for Full-Color page gating).
+function activeDocPageCount() {
+  try { return activeDocument().pages.length; } catch (e) { return 0; }
+}
+
 // Classified: text-only into 'classified-body'.
 async function placeClassifiedAsset(page, spread, asset) {
   for (const c of [page, spread]) {
@@ -4322,5 +4398,6 @@ module.exports = {
   verifyPlacedAssets,
   buildEditionPages,
   activeDocument, activePageLabel,
+  placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
 };
