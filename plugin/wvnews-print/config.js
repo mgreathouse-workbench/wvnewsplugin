@@ -15,7 +15,7 @@
 // PLUGIN_SERVER_BASE override is applied to any .ccx submitted for
 // review.
 const CONFIG = {
-  SERVER_BASE: 'http://localhost:3000',
+  SERVER_BASE: 'https://staging.wvnews.com',
   CLIENT_ID:   'wvnews-print',
   OOB_REDIRECT: 'urn:ietf:wg:oauth:2.0:oob',
 };
