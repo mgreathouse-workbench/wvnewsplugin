@@ -744,7 +744,9 @@ async function onPlaceAd(adId) {
       assetId: asset.id,
       siteId: state.siteId,
       editionDate: state.editionDate,
-      pageAssignment: res.page || folio || asset.pageAssignment || 'A1',
+      // Record the order's assigned newspaper folio (e.g. "A3") first — the
+      // InDesign active-page NAME (res.page/folio, e.g. "1") is not a folio.
+      pageAssignment: asset.pageAssignment || res.page || folio || 'A1',
       documentName: '',
       frameLabel: res.frameLabel,
       status: 'placed',
