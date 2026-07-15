@@ -62,7 +62,7 @@ if (typeof TextDecoder === 'undefined') {
 const { CONFIG } = require('./config.js');
 const { beginAuthorize, exchangeCode, getAccessToken, signOut } = require('./auth.js');
 const {
-  fetchBudget, fetchSites, recordPlacement,
+  fetchBudget, fetchSites, recordPlacement, deletePlacement, publishAds,
   listEditions, getEdition, listSnippets, updateEditionStatus,
   listEditionPages, checkoutPage, heartbeatPage, checkinPage, fetchPageBinary,
   fetchMarketplace, fetchSectionHeaders,
@@ -79,8 +79,10 @@ const {
   verifyPlacedAssets,
   buildEditionPages,
   activeDocument, activePageLabel,
+  placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
 } = require('./indesign.js');
+const { isColorPage } = require('./color-placement.js');
 
 // Heartbeat cadence. Server lock TTL is 90 minutes — beat well inside
 // that so a network blip doesn't time a real designer out.
@@ -155,9 +157,12 @@ const state = {
   // ('editions'). See PUBLICATION-CREATION-SPEC.md.
   view: 'budget',                  // 'budget' | 'editions' | 'marketplace'
 
-  // Marketplace tab: available classifieds / legals / obits for the
+  // Marketplace tab: available classifieds / legals / obits / ads for the
   // selected publication, pulled on demand and placed into a frame.
-  marketplace: null,               // { loading, classifieds:{items}, legals:{items}, obits:{items} }
+  marketplace: null,               // { loading, classifieds, legals, obits, ads }
+  placedAds: {},                   // orderId → page label, this session (UI feedback)
+  adsEditionId: '',                // editionId of the currently-loaded ads feed
+  editionFormat: 'broadsheet',     // for Full-Color folio gating (ET is broadsheet)
 
   // Editions inner view: list of editions, the create/edit form,
   // or the detail (post-create) screen.
@@ -364,6 +369,12 @@ function renderMain() {
   for (const el of document.querySelectorAll('[data-mkt-place]')) {
     el.onclick = () => onPlaceMarketplace(el.getAttribute('data-mkt-place'));
   }
+  // Display ads: per-item Place + Publish Page.
+  for (const el of document.querySelectorAll('[data-ad-place]')) {
+    el.onclick = () => onPlaceAd(el.getAttribute('data-ad-place'));
+  }
+  const btnAdPublish = $('btn-ad-publish');
+  if (btnAdPublish) btnAdPublish.onclick = () => onPublishPage();
   // Editions view: row clicks drill into an edition; the "back"
   // button in the detail view returns to the list.
   for (const el of document.querySelectorAll('[data-pub-id]')) {
@@ -623,7 +634,35 @@ function renderMarketplaceView() {
     </div>
     ${row('legals', 'Legals')}
     ${row('obits', 'Obituaries')}
+    ${renderAdsSection(m)}
   `;
+}
+
+// Display ads are image placements (not text blocks), so they get their own
+// per-item list with individual Place buttons + a Publish Page action.
+function renderAdsSection(m) {
+  const ads = (m.ads && m.ads.items) || [];
+  const placed = state.placedAds || {};
+  const items = ads.map(a => {
+    const isPlaced = placed[String(a.id)];
+    const color = a.colorRequired ? ' <span style="color:#c026d3;font-size:9px;font-weight:700;">● COLOR</span>' : '';
+    const dims = (a.widthIn && a.heightIn) ? `${a.widthIn}×${a.heightIn}in` : '';
+    return `
+      <div class="story" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div>
+          <div class="story-headline">${escapeHtml(a.advertiser || 'Display ad')}${color}</div>
+          <div class="story-meta">${escapeHtml(a.sizeCode || '')}${dims ? ' · ' + dims : ''}${isPlaced ? ` · <span style="color:#2563eb;">placed ${escapeHtml(isPlaced)}</span>` : ''}</div>
+        </div>
+        <button class="primary" data-ad-place="${escapeHtml(String(a.id))}" ${state.busy ? 'disabled' : ''}>Place</button>
+      </div>`;
+  }).join('');
+  return `
+    <div class="story-headline" style="margin-top:10px;">Display Ads <span class="story-meta">(${ads.length})</span></div>
+    ${ads.length ? items : '<div class="story-meta" style="padding:2px 0 6px;">No scheduled ads with artwork for this edition.</div>'}
+    <div class="row" style="margin:2px 0 8px;justify-content:flex-end;">
+      <button class="secondary" id="btn-ad-publish" ${state.busy ? 'disabled' : ''}
+        title="Flip every placed ad on the active InDesign page to Published.">✓ Publish Page</button>
+    </div>`;
 }
 
 async function refreshMarketplace() {
@@ -631,12 +670,20 @@ async function refreshMarketplace() {
   state.marketplace = { loading: true, date: state.editionDate || '' };
   state.error = ''; render();
   try {
-    const [classifieds, legals, obits] = await Promise.all([
+    const [classifieds, legals, obits, ads] = await Promise.all([
       fetchMarketplace(state.siteId, 'classifieds', state.editionDate),
       fetchMarketplace(state.siteId, 'legals', state.editionDate),
       fetchMarketplace(state.siteId, 'obits', state.editionDate),
+      // Ads require an edition date (the feed 400s without one); tolerate that
+      // and any error so a missing date never breaks the whole marketplace.
+      state.editionDate
+        ? fetchMarketplace(state.siteId, 'ads', state.editionDate).catch(() => ({ count: 0, items: [] }))
+        : Promise.resolve({ count: 0, items: [] }),
     ]);
-    state.marketplace = { loading: false, date: state.editionDate || '', classifieds, legals, obits };
+    // Every ad item carries its editionId (all the same for this edition) —
+    // stash it for Publish Page.
+    state.adsEditionId = ((ads.items[0] || {}).editionId) || '';
+    state.marketplace = { loading: false, date: state.editionDate || '', classifieds, legals, obits, ads };
   } catch (err) {
     state.marketplace = { loading: false, date: state.editionDate || '' };
     state.error = `Could not load marketplace: ${err.message}`;
@@ -668,6 +715,72 @@ async function onPlaceMarketplace(kind) {
   } catch (err) {
     state.error = err.message;
   } finally {
+    state.busy = false; render();
+  }
+}
+
+// Place ONE display ad's print-ready artwork on the active page, sized to its
+// real dimensions, color-gated, and recorded (which flips it scheduled→placed
+// server-side).
+async function onPlaceAd(adId) {
+  const bucket = state.marketplace && state.marketplace.ads;
+  const asset = ((bucket && bucket.items) || []).find(a => String(a.id) === String(adId));
+  if (!asset) { state.error = 'Ad not found — refresh the marketplace.'; render(); return; }
+  state.error = ''; state.info = ''; state.busy = true; render();
+  try {
+    // Color gate: a color-required ad may only drop on a Full-Color folio.
+    const folio = activePageLabel();
+    const verdict = isColorPage({
+      format: state.editionFormat || 'broadsheet',
+      totalPages: activeDocPageCount(),
+      folio,
+    });
+    if (asset.colorRequired && verdict && verdict.color === false) {
+      throw new Error(`${asset.advertiser || 'This ad'} needs full color, but ${folio || 'this page'} prints black & white. Move to a color page and try again.`);
+    }
+    const res = await placeAdSized(asset);
+    // Record the placement — drives the server scheduled→placed side-effect.
+    await recordPlacement({
+      assetId: asset.id,
+      siteId: state.siteId,
+      editionDate: state.editionDate,
+      // Record the order's assigned newspaper folio (e.g. "A3") first — the
+      // InDesign active-page NAME (res.page/folio, e.g. "1") is not a folio.
+      pageAssignment: asset.pageAssignment || res.page || folio || 'A1',
+      documentName: '',
+      frameLabel: res.frameLabel,
+      status: 'placed',
+    });
+    state.placedAds = state.placedAds || {};
+    state.placedAds[String(asset.id)] = res.page || folio || '';
+    const warn = (asset.colorRequired && verdict && verdict.color === null)
+      ? ' (⚠ could not confirm this is a color page)' : '';
+    state.info = `Placed ${asset.advertiser || 'ad'}${asset.sizeCode ? ' (' + asset.sizeCode + ')' : ''} on ${res.page}.${warn}`;
+  } catch (err) {
+    state.error = err.message;
+  } finally {
+    state.busy = false; render();
+  }
+}
+
+// Publish every placed ad on the active page/spread — flips those insertions
+// scheduled/placed → published for this edition.
+async function onPublishPage() {
+  const editionId = state.adsEditionId;
+  if (!editionId) { state.error = 'Load the Ads marketplace for this edition first.'; render(); return; }
+  state.error = ''; state.info = ''; state.busy = true; render();
+  try {
+    const orderIds = placedAdOrderIdsOnActivePage();
+    if (!orderIds.length) throw new Error('No placed ads on the active page to publish.');
+    const r = await publishAds({ editionId, orderIds });
+    const pub = ((r && r.published) || []).length;
+    const skip = ((r && r.skipped) || []).length;
+    const errs = ((r && r.errors) || []).length;
+    state.info = `Published ${pub} ad${pub === 1 ? '' : 's'}${skip ? `, ${skip} already published` : ''}${errs ? `, ${errs} failed` : ''}.`;
+    // Published ads leave the feed — refresh to reflect it.
+    await refreshMarketplace();
+  } catch (err) {
+    state.error = err.message;
     state.busy = false; render();
   }
 }
