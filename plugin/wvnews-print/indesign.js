@@ -13,6 +13,20 @@ const {
   checkinPage,
 } = require('./api.js');
 
+// Page geometry (column widths, gutters, page sizes) for every publication
+// format. GENERATED from wvnews-platform/src/lib/publication-geometry.js —
+// see page-geometry.js. This replaced hand-copied broadsheet-only constants
+// (ET_COL_W, ET_GUTTER, LEGAL_COLUMN_WIDTHS_IN) that could drift from the
+// platform's grid.
+const { columnWidthIn, PAGE_FORMATS } = require('./page-geometry.js');
+
+// The grid the plugin lays out on. Everything below was previously hardcoded
+// to the Exponent Telegram broadsheet; this names that assumption so it can
+// be replaced with the edition's real format (state.editionFormat) rather
+// than being invisible. Tab and magazine editions currently still get
+// broadsheet math here.
+const PAGE_FORMAT = 'broadsheet';
+
 let ID = null;
 let UXP_FS = null;
 let UXP_TEMP = null;
@@ -712,10 +726,10 @@ async function placeObitPhoto(id, doc, frame, anchor) {
 // Standard 1-column content block for manually-placed marketplace content
 // (legals / classifieds / obits). The plugin creates the block frame itself
 // so content arrives WITH its block rather than needing a pre-drawn frame.
-//   width   1.6458 in (one newspaper column)
+//   width   one newspaper column on PAGE_FORMAT's grid (1.6458 in broadsheet)
 //   font    Helvetica Neue 8pt / 8.5pt leading
 //   align   left-justified (justify, last line flush left)
-const CONTENT_BLOCK = { widthIn: 1.6458, font: 'Helvetica Neue', pointSize: 8, leading: 8.5 };
+const CONTENT_BLOCK = { widthIn: columnWidthIn(PAGE_FORMAT, 1), font: 'Helvetica Neue', pointSize: 8, leading: 8.5 };
 
 // Obit portrait: a column-wide, portrait-ratio box the memorial photo is
 // anchored into at the top of each obit. FILL_PROPORTIONALLY fills + crops.
@@ -726,10 +740,11 @@ const OBIT_PHOTO_ASPECT = 1.2; // height = width * 1.2 (portrait)
 const FOLIO_OFFSET_IN = 0.5884;
 
 // Newspaper column widths in inches (multi-column spans the gutters). Legals
-// carry a columnCount (1-4); the placed block is sized to match.
-const LEGAL_COLUMN_WIDTHS_IN = { 1: 1.6458, 2: 3.4167, 3: 5.1875, 4: 6.9583 };
+// carry a columnCount (1-4); the placed block is sized to match. Widths come
+// from the shared grid — the clamp to 4 is a legals business rule, not a
+// property of the page.
 function legalColumnWidthIn(n) {
-  return LEGAL_COLUMN_WIDTHS_IN[Math.max(1, Math.min(4, Number(n) || 1))];
+  return columnWidthIn(PAGE_FORMAT, Math.max(1, Math.min(4, Number(n) || 1)));
 }
 
 // Apply a solid black border of `pts` points to a frame (legal "Border" opt).
@@ -3371,9 +3386,12 @@ function collectStoryFrames(containers) {
   return out;
 }
 
-// ET editorial grid: column 1.6458 in, gutter 0.125 in (→ 6 cols = 10.5 in).
-const ET_COL_W = 1.6458;
-const ET_GUTTER = 0.125;
+// Editorial grid for PAGE_FORMAT, from the shared table. Broadsheet is a
+// 1.6458 in column on a 0.125 in gutter (→ 6 cols = 10.5 in). Note the gutter
+// is NOT the same for every format — the 5-column tab runs 0.1405 in and the
+// booklet 0.1667 in — so read it off the format rather than assuming.
+const ET_COL_W = columnWidthIn(PAGE_FORMAT, 1);
+const ET_GUTTER = PAGE_FORMATS[PAGE_FORMAT].gutterIn;
 
 // Set a body frame's column count to match its width on the ET grid:
 // N = round((W + gutter) / (colWidth + gutter)). e.g. a 6.9583 in frame
