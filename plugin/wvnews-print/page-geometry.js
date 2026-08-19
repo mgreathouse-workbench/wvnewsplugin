@@ -1,13 +1,15 @@
 // GENERATED FILE — DO NOT EDIT.
 //
-// Source of truth: wvnews-platform/src/lib/publication-geometry.js
-// Regenerate:     node scripts/generate-plugin-geometry.mjs   (in wvnews-platform)
-// Verify:         node scripts/generate-plugin-geometry.mjs --check
+// column grids, gutters and page sizes per publication format
 //
-// The plugin has no build step, so this is a CommonJS transform of the
-// platform's ESM module: identical function bodies, different wrapper. Edit
-// the platform module and regenerate — never edit this file directly, or the
-// plugin will lay out ads on a grid the rest of the system disagrees with.
+// Source of truth: wvnews-platform/src/lib/publication-geometry.js
+// Regenerate:      node scripts/generate-plugin-modules.mjs   (in wvnews-platform)
+// Verify:          node scripts/generate-plugin-modules.mjs --check
+//
+// The plugin has no build step, so this is a CommonJS transform of Platform's
+// ESM module: identical function bodies, different wrapper. Edit the Platform
+// module and regenerate — never edit this file directly, or the plugin will
+// disagree with the rest of the system.
 //
 // sourceSha256: c94e8142d268516e
 
