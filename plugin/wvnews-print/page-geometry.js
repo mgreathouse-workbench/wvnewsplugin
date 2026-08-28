@@ -11,7 +11,7 @@
 // module and regenerate — never edit this file directly, or the plugin will
 // disagree with the rest of the system.
 //
-// sourceSha256: c94e8142d268516e
+// sourceSha256: a06f881b100ad2d8
 
 // Page geometry: column grids per publication format.
 //
@@ -242,6 +242,26 @@ function columnWidthIn(format, columns) {
   return f.columnWidthsIn[n - 1];
 }
 
+// Distance from the LEFT edge of the live area to the left edge of column N.
+//
+// The other half of the geometry an InDesign frame needs: columnWidthIn gives
+// the width of an N-column block, this gives where it starts. Column 1 is 0;
+// after that it is the width of the block to its left plus the gutter that
+// separates them — NOT (N-1) x single-column width, which would drop every
+// intervening gutter and creep an ad left by up to 0.7" on a broadsheet.
+//
+// Returns null for an unknown format or a column outside the grid, so a
+// caller cannot build a frame from a guess.
+function columnOffsetIn(format, startColumn) {
+  const f = getPageFormat(format);
+  if (!f || !Array.isArray(f.columnWidthsIn)) return null;
+  const n = Number(startColumn);
+  if (!Number.isInteger(n) || n < 1 || n > f.columnWidthsIn.length) return null;
+  if (n === 1) return 0;
+  const gutter = f.gutterIn ?? DEFAULT_GUTTER_IN;
+  return Number((f.columnWidthsIn[n - 2] + gutter).toFixed(4));
+}
+
 // Inverse of columnWidthIn — snap a measured width back onto the grid.
 // Used when an incoming ad is described in inches (legacy orders, supplied
 // artwork) and has to be reconciled to a column count. Tolerance defaults to
@@ -319,6 +339,7 @@ module.exports = {
   pageFormatIsAmbiguous,
   getPageFormat,
   columnWidthIn,
+  columnOffsetIn,
   columnsForWidthIn,
   columnInches,
   fullPageDimensions,

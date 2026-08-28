@@ -208,6 +208,19 @@ async function getEdition(id) {
   return await call(`/api/print/editions/${encodeURIComponent(id)}`);
 }
 
+// The DERIVED page plan for an edition: per folio, every ad slot with its
+// real geometry — startColumn, columns, depthIn, and topOffsetIn measured
+// from the top of the live area, plus widthIn resolved against the
+// publication's column grid.
+//
+// Fetched rather than recomputed here. The platform builds this with the same
+// buildPagePlan() the layout artist's screen renders, so the frames this
+// plugin creates cannot disagree with what they laid out — including which
+// ads it refused to place, and why.
+async function getEditionPlan(id) {
+  return await call(`/api/print/editions/${encodeURIComponent(id)}/plan`);
+}
+
 // Fetch the trimmed-for-print payload for a single content asset
 // (story/order/classified/obituary/legal) assigned to this edition.
 // Returns null on 404 so the build loop can skip missing assets without
@@ -342,7 +355,7 @@ module.exports = {
   fetchSites, fetchBudget, listTemplates, getTemplate, recordPlacement, deletePlacement, publishAds, fetchBinary,
   listSnippets, getSnippet, downloadSnippetBinary,
   getPublicationTemplate, downloadPublicationTemplateBinary, fetchStyleMap,
-  listEditions, getEdition, updateEditionStatus, fetchAssetContent,
+  listEditions, getEdition, getEditionPlan, updateEditionStatus, fetchAssetContent,
   listEditionPages, checkoutPage, heartbeatPage, checkinPage, breakPageLock,
   fetchPageBinary, fetchMarketplace, fetchSectionHeaders,
 };
