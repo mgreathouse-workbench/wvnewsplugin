@@ -8,6 +8,7 @@ const {
   getPublicationTemplate,
   downloadPublicationTemplateBinary,
   fetchAssetContent,
+  getEditionPlan,
   fetchStyleMap,
   checkoutPage,
   checkinPage,
@@ -18,7 +19,7 @@ const {
 // see page-geometry.js. This replaced hand-copied broadsheet-only constants
 // (ET_COL_W, ET_GUTTER, LEGAL_COLUMN_WIDTHS_IN) that could drift from the
 // platform's grid.
-const { columnWidthIn, PAGE_FORMATS } = require('./page-geometry.js');
+const { columnWidthIn, columnOffsetIn, PAGE_FORMATS } = require('./page-geometry.js');
 
 // The grid the plugin lays out on. Everything below was previously hardcoded
 // to the Exponent Telegram broadsheet; this names that assumption so it can
@@ -3781,6 +3782,160 @@ async function placeOrderAsset(page, spread, asset) {
   console.warn('[wvnews-print] no frame labeled "ad" for order', asset.id);
 }
 
+// ── Ad wells from the page plan ──────────────────────────────────────
+//
+// This is the layout artist's page, made real. Every slot they placed on the
+// web grid becomes ONE rectangle at exactly its geometry, labelled
+// `order-<orderId>`, with the approved artwork placed into it.
+//
+// Why the frames are built here rather than authored in the template snippet:
+// a snippet carries one generic frame labelled `ad`, so a page could hold
+// exactly one ad and always at the same spot. The plan carries as many slots
+// as were sold, each with its own column, width and depth.
+//
+// Label convention is `order-<orderId>` — NOT the `block:ad:<orderId>` the
+// design note proposed. placedAdOrderIdsOnActivePage() already parses
+// `order-<id>` to decide what Publish Page commits, so a new convention would
+// silently orphan every built frame from the publish step.
+//
+// The live area's origin is the page's MARGIN box: the template is authored
+// with its margins set to the live area, which is the same rectangle
+// topOffsetIn is measured from on the platform side. Reading it off the
+// template rather than hardcoding an inset means a publication whose
+// furniture differs still lands correctly.
+
+// Bounds in POINTS for one plan slot: [top, left, bottom, right], InDesign's
+// geometricBounds order. Caller must already be in point units.
+function adSlotBounds(pageObj, format, slot) {
+  const b = pageObj.bounds;                       // [y1, x1, y2, x2]
+  const mp = pageObj.marginPreferences;
+  const mTop = typeof mp.top === 'number' ? mp.top : 36;
+  const mLeft = typeof mp.left === 'number' ? mp.left : 36;
+
+  // Width comes off the slot when the platform resolved it (it always does
+  // for a placed ad); columnOffsetIn/columnWidthIn are the fallback so a slot
+  // from an older plan still builds.
+  const widthIn = Number.isFinite(Number(slot.widthIn))
+    ? Number(slot.widthIn)
+    : columnWidthIn(format, slot.columns);
+  const offsetIn = columnOffsetIn(format, slot.startColumn);
+  if (!Number.isFinite(widthIn) || !Number.isFinite(offsetIn)) {
+    throw new Error(`slot for order ${slot.orderId || slot.id} has no resolvable width on the ${format} grid`);
+  }
+  const top = b[0] + mTop + Number(slot.topOffsetIn || 0) * 72;
+  const left = b[1] + mLeft + offsetIn * 72;
+  return [top, left, top + Number(slot.depthIn) * 72, left + widthIn * 72];
+}
+
+// A grey holding box, for a slot whose ad has no approved artwork yet.
+//
+// The ad is on the page because it is SOLD — the artwork follows, sometimes
+// by weeks. An empty unlabelled rectangle is indistinguishable from a mistake,
+// so the box is filled grey and carries its order number: the number the ad
+// staff chase the art with, and the same thing the web grid shows.
+//
+// The caption is a separate text frame labelled `order-<id>-holding` so that
+// re-running Build Pages, or a later pass that drops real artwork in, can find
+// and delete it without disturbing the ad frame itself.
+function drawHoldingBox(id, doc, pageObj, rect, slot) {
+  const orderId = slotIdentity(slot).id;
+  try {
+    rect.fillColor = doc.colors.item('Black');
+    rect.fillTint = 12;
+  } catch (e) { /* a swatch-less doc still gets the labelled frame */ }
+  try {
+    rect.strokeColor = doc.colors.item('Black');
+    rect.strokeTint = 45;
+    rect.strokeWeight = 0.5;
+  } catch (e) {}
+
+  const gb = rect.geometricBounds;
+  try {
+    const caption = pageObj.textFrames.add({ geometricBounds: gb });
+    caption.label = `${slotIdentity(slot).frameLabel}-holding`;
+    caption.contents = `${orderId}\r${slot.label || slot.advertiser || ''}`.trim();
+    try {
+      caption.textFramePreferences.verticalJustification = id.VerticalJustification.CENTER_ALIGN;
+      caption.textFramePreferences.insetSpacing = 4;
+    } catch (e) {}
+    try {
+      caption.texts.item(0).justification = id.Justification.CENTER_ALIGN;
+      caption.texts.item(0).pointSize = 10;
+    } catch (e) {}
+    // The caption must never intercept a click meant for the ad frame, and
+    // must never push body copy around — it is annotation, not content.
+    try { caption.textFramePreferences.ignoreWrap = true; } catch (e) {}
+  } catch (e) {
+    console.warn('[wvnews-print] holding caption failed for order', orderId, e?.message || e);
+  }
+}
+
+// Split a plan slot's id ("order:7930", "filler:abc") into its parts.
+//
+// The kind matters twice over: it decides which asset endpoint carries the
+// artwork, and a house ad must never be labelled `order-<id>` — Publish Page
+// parses those to decide what to commit against real insertions, and a filler
+// has none.
+function slotIdentity(slot) {
+  const raw = String(slot.orderId || slot.id || '');
+  const m = String(slot.id || '').match(/^(order|filler):(.+)$/);
+  const kind = m ? m[1] : (slot.kind || 'order');
+  const id = m ? m[2] : raw.replace(/^(order|filler):/, '');
+  return { kind, id, frameLabel: kind === 'filler' ? `filler-${id}` : `order-${id}` };
+}
+
+// Build every ad well the plan puts on this folio. Returns { placed, missed }.
+//
+// `content` per slot (advertiser, fileUrl) is fetched by the caller, because
+// the plan is pure geometry — it deliberately knows nothing about artwork.
+async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
+  const id = host();
+  const slots = Array.isArray(planPage && planPage.slots) ? planPage.slots : [];
+  if (!slots.length) return { placed: 0, missed: 0 };
+
+  const format = planPage.format;
+  const vp = doc.viewPreferences;
+  const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+  let placed = 0, missed = 0;
+  try {
+    for (const slot of slots) {
+      const { id: orderId, frameLabel } = slotIdentity(slot);
+      try {
+        const bounds = adSlotBounds(pageObj, format, slot);
+        const rect = pageObj.rectangles.add({ geometricBounds: bounds });
+        try { rect.label = frameLabel; } catch (e) {}
+        try { rect.strokeWeight = 0; } catch (e) {}
+        // An ad is opaque paper: text must flow around it, not under it.
+        try { applyTextWrap(rect, 0); } catch (e) {}
+
+        const content = contentByOrderId[orderId] || null;
+        if (content && content.fileUrl) {
+          const buf = await fetchBinary(content.fileUrl);
+          const ext = (String(content.fileUrl).split('?')[0].split('.').pop() || 'pdf').slice(0, 4);
+          const tempPath = await writeTemp(`${frameLabel}.${ext}`, buf);
+          rect.place(tempPath);
+          // FILL_PROPORTIONALLY would crop an ad that is a hair off its
+          // nominal size. The frame IS the sold size, so the artwork is
+          // fitted to it rather than the frame to the artwork.
+          try { rect.fit(id.FitOptions.CONTENT_TO_FRAME); } catch (e) {}
+        } else {
+          drawHoldingBox(id, doc, pageObj, rect, slot);
+        }
+        placed++;
+      } catch (e) {
+        missed++;
+        console.warn('[wvnews-print] ad well failed for order', orderId, e?.message || e);
+      }
+    }
+  } finally {
+    vp.horizontalMeasurementUnits = sH;
+    vp.verticalMeasurementUnits = sV;
+  }
+  return { placed, missed };
+}
+
 // ── Marketplace display-ad placement ─────────────────────────────────
 // The marketplace flow drops a STANDALONE display ad (unlike placeOrderAsset,
 // which fills a pre-labeled 'ad' frame in a template snippet). Create a new
@@ -4044,7 +4199,7 @@ async function placeLegalAsset(page, spread, asset) {
   console.warn('[wvnews-print] no frame labeled "legal-body" for', asset.id);
 }
 
-async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}) {
+async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, planPage = null) {
   const list = Array.isArray(page.assets) ? page.assets : [];
   if (!list.length) return { placed: 0, missed: 0 };
   const pageObj = doc.pages.item(0);
@@ -4062,10 +4217,46 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}) {
   // Path B and lose headline-in-its-own-box.
   let autoStoryIdx = 0;
   let placed = 0, missed = 0;
+
+  // Ads the PLAN positions. These are built as real wells at the artist's
+  // geometry, so they bypass the per-asset loop below entirely — that path
+  // only knows how to fill a single generic `ad` frame in a snippet.
+  //
+  // An order still in the loop is one the plan did not position: it is in
+  // plan.unplaced (assigned to the folio but never dropped on the grid), or
+  // the stacker refused it and it is in plan.errors. Those keep the old
+  // behaviour rather than silently vanishing from the page.
+  const plannedSlots = (planPage && Array.isArray(planPage.slots) ? planPage.slots : [])
+    .map(sl => slotIdentity(sl));
+  const plannedOrderIds = new Set(plannedSlots.filter(x => x.kind === 'order').map(x => x.id));
+  const plannedFillerIds = new Set(plannedSlots.filter(x => x.kind === 'filler').map(x => x.id));
   // Classifieds are placed together as a grouped section (one header per
   // category) after the loop, not one-frame-each — so collect them here.
   const classifiedItems = [];
+  // Artwork for the planned ads, fetched before the wells are built. The
+  // plan is pure geometry and carries no file, so this is the join between
+  // "where it goes" and "what goes in it".
+  const adContent = {};
+  for (const { kind, id } of plannedSlots) {
+    try { adContent[id] = await fetchAssetContent(edition.id, kind, id); }
+    catch (e) {
+      // A missing payload is not fatal — the well is still built, as a
+      // holding box. The space is spoken for either way.
+      console.warn(`[wvnews-print] artwork fetch failed for ${kind}`, id, e?.message || e);
+      adContent[id] = null;
+    }
+  }
+  if (plannedSlots.length) {
+    const adStats = await placeAdSlotsForPage(doc, pageObj, planPage, adContent);
+    placed += adStats.placed;
+    missed += adStats.missed;
+    if (adStats.placed) console.log(`[wvnews-print] built ${adStats.placed} ad well(s) from the plan on ${page.folio}`);
+  }
+
   for (const a of list) {
+    // Already built from the plan, at the geometry the artist chose.
+    if (a.kind === 'order' && plannedOrderIds.has(String(a.id))) continue;
+    if (a.kind === 'filler') continue;   // fillers exist only as plan slots
     try {
       const content = await fetchAssetContent(edition.id, a.kind, a.id);
       if (!content) { missed++; console.warn(`[wvnews-print] asset content missing for ${a.kind}/${a.id}`); continue; }
@@ -4117,6 +4308,25 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
   let styleMap = null;
   try { styleMap = await fetchStyleMap(edition.siteId); }
   catch (e) { console.warn('[wvnews-print] style map fetch failed:', e?.message || e); }
+
+  // The derived page plan — where every ad sits, in inches, as the layout
+  // artist left it. Fetched once for the whole edition rather than per page.
+  //
+  // Best-effort on purpose: if the platform cannot produce a plan (no
+  // pageFormat on the publication, for instance) the build still runs and
+  // ads fall back to the old single `ad` frame path. A page with no ads
+  // should not be blocked by an ad-geometry failure.
+  let planByFolio = {};
+  try {
+    const planRes = await getEditionPlan(edition.id);
+    for (const pp of (planRes && planRes.plan && planRes.plan.pages) || []) {
+      if (pp && pp.folio) planByFolio[pp.folio] = pp;
+    }
+    const slotCount = Object.values(planByFolio).reduce((a, pp) => a + ((pp.slots || []).length), 0);
+    console.log(`[wvnews-print] build: page plan loaded — ${slotCount} ad slot(s) across ${Object.keys(planByFolio).length} page(s)`);
+  } catch (e) {
+    console.warn('[wvnews-print] page plan fetch failed, ads fall back to the template frame:', e?.message || e);
+  }
   console.log('[wvnews-print] build: target=website (check-in)',
     'template=', (templateEntry && templateEntry.nativePath) || '(blank docs)',
     'styleMap=', styleMap ? (styleMap.id || 'loaded') : '(none)');
@@ -4195,7 +4405,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         // Don't queue jumps off the jump page itself; only source pages
         // capture overflow (and only when a jump landing exists).
         const jumpCtx = (jumpFolio && !pgIsJump) ? { jumpQueue, jumpFolio } : {};
-        assetStats = await placeAssetsForPage(edition, pg, doc, styleMap, jumpCtx);
+        assetStats = await placeAssetsForPage(edition, pg, doc, styleMap, jumpCtx, planByFolio[pg.folio] || null);
         if (assetStats.placed) console.log(`[wvnews-print] placed ${assetStats.placed} asset(s) on ${pg.folio}, ${assetStats.missed} missed`);
       }
 
