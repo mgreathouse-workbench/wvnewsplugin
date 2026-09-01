@@ -3831,14 +3831,22 @@ function adSlotBounds(pageObj, format, slot) {
 //
 // The ad is on the page because it is SOLD — the artwork follows, sometimes
 // by weeks. An empty unlabelled rectangle is indistinguishable from a mistake,
-// so the box is filled grey and carries its order number: the number the ad
+// so the box is filled grey and carries its AD NUMBER: the number the ad
 // staff chase the art with, and the same thing the web grid shows.
+//
+// That is `adNum`, not the order's document id. The two are different fields
+// — the id is short and sequential ("7930"), adNum is the 6-7 digit figure
+// from the legacy system ("1495168") printed on the order — and neither
+// derives from the other, so a box showing the id sends a designer looking up
+// a number nobody uses. It falls back to the id only when the slot predates
+// adNum being carried on the asset.
 //
 // The caption is a separate text frame labelled `order-<id>-holding` so that
 // re-running Build Pages, or a later pass that drops real artwork in, can find
 // and delete it without disturbing the ad frame itself.
 function drawHoldingBox(id, doc, pageObj, rect, slot) {
   const orderId = slotIdentity(slot).id;
+  const shown = slot.adNum ? String(slot.adNum) : orderId;
   try {
     rect.fillColor = doc.colors.item('Black');
     rect.fillTint = 12;
@@ -3853,7 +3861,7 @@ function drawHoldingBox(id, doc, pageObj, rect, slot) {
   try {
     const caption = pageObj.textFrames.add({ geometricBounds: gb });
     caption.label = `${slotIdentity(slot).frameLabel}-holding`;
-    caption.contents = `${orderId}\r${slot.label || slot.advertiser || ''}`.trim();
+    caption.contents = `${shown}\r${slot.label || slot.advertiser || ''}`.trim();
     try {
       caption.textFramePreferences.verticalJustification = id.VerticalJustification.CENTER_ALIGN;
       caption.textFramePreferences.insetSpacing = 4;
@@ -3866,7 +3874,7 @@ function drawHoldingBox(id, doc, pageObj, rect, slot) {
     // must never push body copy around — it is annotation, not content.
     try { caption.textFramePreferences.ignoreWrap = true; } catch (e) {}
   } catch (e) {
-    console.warn('[wvnews-print] holding caption failed for order', orderId, e?.message || e);
+    console.warn('[wvnews-print] holding caption failed for ad', shown, e?.message || e);
   }
 }
 
