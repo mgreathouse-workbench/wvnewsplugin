@@ -3834,19 +3834,21 @@ function adSlotBounds(pageObj, format, slot) {
 // so the box is filled grey and carries its AD NUMBER: the number the ad
 // staff chase the art with, and the same thing the web grid shows.
 //
-// That is `adNum`, not the order's document id. The two are different fields
-// — the id is short and sequential ("7930"), adNum is the 6-7 digit figure
-// from the legacy system ("1495168") printed on the order — and neither
-// derives from the other, so a box showing the id sends a designer looking up
-// a number nobody uses. It falls back to the id only when the slot predates
-// adNum being carried on the asset.
+// That is the ORDER NUMBER, which is the order's document id — the number the
+// CRM shows as Order # (Alfred Construction is #1, Joe R. Pyle is #100), and
+// the number the layout tool searches by. A designer reading the box can type
+// it straight back into the Page Grid or look it up in the CRM.
+//
+// `adNum` — the 6-7 digit Newzware number that also travels on the order — is
+// the fallback, for a house ad or anything without an order number. It is not
+// what staff quote, so it is not what the box leads with.
 //
 // The caption is a separate text frame labelled `order-<id>-holding` so that
 // re-running Build Pages, or a later pass that drops real artwork in, can find
 // and delete it without disturbing the ad frame itself.
 function drawHoldingBox(id, doc, pageObj, rect, slot) {
   const orderId = slotIdentity(slot).id;
-  const shown = slot.adNum ? String(slot.adNum) : orderId;
+  const shown = orderId || (slot.adNum ? String(slot.adNum) : '');
   try {
     rect.fillColor = doc.colors.item('Black');
     rect.fillTint = 12;
