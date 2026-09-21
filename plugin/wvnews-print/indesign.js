@@ -2993,6 +2993,62 @@ async function placeSnippetIntoActiveDoc(doc, tempPath, snippet) {
     () => doc.place(tempPath, false),
   ];
 
+  // Collect the items this place actually created, by id-diff against the
+  // baseline snapshot taken before it ran.
+  const newItems = () => {
+    const out = [];
+    for (const container of [page, spread]) {
+      if (!container) continue;
+      try {
+        const items = container.allPageItems;
+        const len = (items && typeof items.length === 'number') ? items.length : 0;
+        for (let i = 0; i < len; i++) {
+          try { if (!baselineIds.has(items[i].id)) out.push(items[i]); } catch {}
+        }
+      } catch {}
+    }
+    return out;
+  };
+
+  // A snippet authored on a LEFT-HAND page lands a page width off.
+  //
+  // We place in "original location" mode, so the coordinates encoded in the
+  // .idms win — which is what makes a designer's layout come back exactly as
+  // drawn. But a snippet cut from the verso of a facing-pages spread carries
+  // NEGATIVE x relative to the spread origin. Dropped into the single-page
+  // document each folio is built as, it lands one full page width to the left
+  // of the paper.
+  //
+  // The correction is deliberately narrow: only an offset within a point of a
+  // whole page width is treated as this bug and moved back. Anything else is
+  // a designer's intentional bleed or a genuinely misplaced snippet, and
+  // silently dragging that onto the page would hide a real problem.
+  const recentreIfPageWidthOff = () => {
+    const items = newItems();
+    if (!items.length) return;
+    const b = page.bounds;                          // [y1, x1, y2, x2]
+    const pageW = b[3] - b[1];
+    let minX = Infinity;
+    for (const it of items) {
+      try { const g = it.geometricBounds; if (g && g[1] < minX) minX = g[1]; } catch {}
+    }
+    if (!Number.isFinite(minX)) return;
+    const dx = b[1] - minX;
+    if (Math.abs(Math.abs(dx) - pageW) > 1) return;   // not a whole-page offset
+    let moved = 0;
+    for (const it of items) {
+      try { it.move(undefined, [dx, 0]); moved++; } catch (e) {
+        try {
+          const g = it.geometricBounds;
+          it.geometricBounds = [g[0], g[1] + dx, g[2], g[3] + dx];
+          moved++;
+        } catch {}
+      }
+    }
+    console.warn(`[wvnews-print] snippet was ${(dx / 72).toFixed(3)}" off (one page width) — `
+      + `authored on a left-hand page; moved ${moved}/${items.length} item(s) onto the page`);
+  };
+
   let landed = false;
   let lastErr;
   try {
@@ -3001,6 +3057,9 @@ async function placeSnippetIntoActiveDoc(doc, tempPath, snippet) {
         attempts[i]();
         if (await pollLanded(1500)) {
           console.log(`[wvnews-print] placed snippet via attempt ${i + 1}`);
+          try { recentreIfPageWidthOff(); } catch (e) {
+            console.warn('[wvnews-print] snippet re-centre check failed:', e?.message || e);
+          }
           landed = true;
           break;
         }
@@ -3834,16 +3893,24 @@ function liveAreaOrigin(pageObj, format) {
   if (!f) return { top: b[0] + mTop, left: b[1] + mLeft, how: 'margins (no grid for format)' };
 
   // Vertical.
+  //
+  // Stated as "how much taller than the live area is this page", rather than
+  // as a list of known sheet sizes. A template cut to the full 20.86" trim and
+  // one cut to 20.75" (trim less the grey bar) are the same case — both carry
+  // the folio bar above the live area — and a rule that only recognised exact
+  // sheet depths would send the second one down the margins path.
+  const folioIn = f.folioBarIn || 0;
+  const extraIn = pageHIn - f.pageDepthIn;
   let top, howTop;
-  if (Math.abs(pageHIn - f.pageDepthIn) < 0.05) {
+  if (Math.abs(extraIn) < 0.05) {
     top = b[0];
-    howTop = 'page is the live area';
-  } else if (f.sheetDepthIn && Math.abs(pageHIn - f.sheetDepthIn) < 0.2) {
-    top = b[0] + (f.folioBarIn || 0) * 72;
-    howTop = `full sheet, below the ${f.folioBarIn}" folio bar`;
+    howTop = `page IS the live area (${f.pageDepthIn}")`;
+  } else if (folioIn > 0 && extraIn >= folioIn - 0.02) {
+    top = b[0] + folioIn * 72;
+    howTop = `page is ${extraIn.toFixed(3)}" over the live area — live starts below the ${folioIn}" folio bar`;
   } else {
     top = b[0] + mTop;
-    howTop = `margins (page ${pageHIn.toFixed(3)}" matches neither live ${f.pageDepthIn}" nor sheet ${f.sheetDepthIn || '?'}")`;
+    howTop = `margins — page ${pageHIn.toFixed(3)}" is ${extraIn.toFixed(3)}" over the live area, less than a folio bar, so the furniture cannot be identified`;
   }
 
   // Horizontal. No side furniture is documented, so a page that is already
@@ -3961,7 +4028,14 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
   // Once per page, not per ad: the answer is a property of the page, and
   // logging it once gives a single line to read when an ad lands wrong.
   const origin = liveAreaOrigin(pageObj, format);
-  console.log(`[wvnews-print] live area on ${planPage.folio || '?'}: ${origin.how}`);
+  // The measured page, every time — not only when the rule falls through.
+  // Without the actual numbers, "the ads are still too high" cannot be told
+  // apart from "the plugin was never reloaded".
+  const pb = pageObj.bounds;
+  console.log(`[wvnews-print] live area on ${planPage.folio || '?'}: ${origin.how}`
+    + ` | page ${((pb[3] - pb[1]) / 72).toFixed(3)}x${((pb[2] - pb[0]) / 72).toFixed(3)}in`
+    + ` at x=${(pb[1] / 72).toFixed(3)} y=${(pb[0] / 72).toFixed(3)}`
+    + ` | live top ${((origin.top - pb[0]) / 72).toFixed(4)}in from page top`);
   const vp = doc.viewPreferences;
   const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
   vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
