@@ -3033,8 +3033,17 @@ async function placeSnippetIntoActiveDoc(doc, tempPath, snippet) {
       try { const g = it.geometricBounds; if (g && g[1] < minX) minX = g[1]; } catch {}
     }
     if (!Number.isFinite(minX)) return;
-    const dx = b[1] - minX;
-    if (Math.abs(Math.abs(dx) - pageW) > 1) return;   // not a whole-page offset
+
+    // Move by EXACTLY one page width, not to the page's left edge.
+    //
+    // Snapping the leftmost item flush to the edge throws away the snippet's
+    // own inset — a layout drawn with a 0.25" gutter came back sitting hard
+    // against the trim. The verso offset is a whole page width by
+    // construction, so translating by exactly that width puts every item back
+    // where the designer drew it, gutter included.
+    const offBy = b[1] - minX;                       // > 0: items sit left of the page
+    if (!(offBy > pageW * 0.5 && offBy < pageW * 1.5)) return;
+    const dx = pageW;
     let moved = 0;
     for (const it of items) {
       try { it.move(undefined, [dx, 0]); moved++; } catch (e) {
@@ -3045,8 +3054,9 @@ async function placeSnippetIntoActiveDoc(doc, tempPath, snippet) {
         } catch {}
       }
     }
-    console.warn(`[wvnews-print] snippet was ${(dx / 72).toFixed(3)}" off (one page width) — `
-      + `authored on a left-hand page; moved ${moved}/${items.length} item(s) onto the page`);
+    console.warn(`[wvnews-print] snippet was authored on a left-hand page — moved `
+      + `${moved}/${items.length} item(s) right by one page width (${(dx / 72).toFixed(3)}"); `
+      + `leftmost item now ${((minX + dx - b[1]) / 72).toFixed(3)}" inside the page edge`);
   };
 
   let landed = false;
@@ -4046,6 +4056,16 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
       const { id: orderId, frameLabel } = slotIdentity(slot);
       try {
         const bounds = adSlotBounds(pageObj, format, slot, origin);
+        if (placed === 0) {
+          // The first well on the page, in inches from the page's top edge.
+          // Page size + live-area rule + this line together pin down exactly
+          // where an ad went and why, with no guessing from a screenshot.
+          const pbb = pageObj.bounds;
+          console.log(`[wvnews-print] first ad well on ${planPage.folio || '?'}:`
+            + ` top ${((bounds[0] - pbb[0]) / 72).toFixed(4)}in, bottom ${((bounds[2] - pbb[0]) / 72).toFixed(4)}in`
+            + ` from page top (page is ${((pbb[2] - pbb[0]) / 72).toFixed(3)}in tall);`
+            + ` slot topOffsetIn=${slot.topOffsetIn} depthIn=${slot.depthIn}`);
+        }
         const rect = pageObj.rectangles.add({ geometricBounds: bounds });
         try { rect.label = frameLabel; } catch (e) {}
         try { rect.strokeWeight = 0; } catch (e) {}
