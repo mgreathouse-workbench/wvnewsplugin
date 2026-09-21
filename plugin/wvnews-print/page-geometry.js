@@ -11,7 +11,7 @@
 // module and regenerate — never edit this file directly, or the plugin will
 // disagree with the rest of the system.
 //
-// sourceSha256: a06f881b100ad2d8
+// sourceSha256: a40ef1313dca72bb
 
 // Page geometry: column grids per publication format.
 //
@@ -83,6 +83,26 @@ const PAGE_FORMATS = {
     pageDepthIn: 20.42,
     doubleTruckWidthIn: 21.5,
     doubleTruckDepthIn: 20.42,
+    // ── The physical sheet, and the furniture printed outside the live area ──
+    //
+    // The broadsheet sheet is 20.86" deep in three strips:
+    //
+    //   0.3289"  folio bar, at the head
+    //   20.42"   live area  — this is pageDepthIn, ads and editorial
+    //   0.11"    grey press colour bar, at the foot
+    //
+    // pageDepthIn ALREADY nets off both bars. Subtracting either again
+    // shrinks the page twice and makes a 10.5 x 20.42 full-page ad
+    // unplaceable, because a full page IS exactly the live area.
+    //
+    // These exist so a consumer drawing on the physical sheet can find the
+    // top of the live area without trusting a template's margins. A template
+    // whose margins are zero is indistinguishable, by margins alone, from one
+    // whose margins are the live area — and guessing wrong puts every ad on
+    // the page a folio bar out of position.
+    sheetDepthIn: 20.86,
+    folioBarIn: 0.3289,
+    colorBarIn: 0.11,
   },
   'tab-6': {
     id: 'tab-6',

@@ -3806,11 +3806,65 @@ async function placeOrderAsset(page, spread, asset) {
 
 // Bounds in POINTS for one plan slot: [top, left, bottom, right], InDesign's
 // geometricBounds order. Caller must already be in point units.
-function adSlotBounds(pageObj, format, slot) {
+// Where the LIVE AREA starts on this InDesign page, in points from the page's
+// top-left. Returns { top, left, how } — `how` names the rule that decided it,
+// because when an ad lands in the wrong place this is the first thing to know.
+//
+// Margins used to be trusted outright, and that was the bug: a template whose
+// margins are ZERO is indistinguishable, by margins alone, from one whose
+// margins ARE the live area. Both report mTop = 0, so every ad on a full-sheet
+// template sat one folio bar (0.3289") too high, and the slack showed up as a
+// third of an inch of white above the grey colour bar at the foot.
+//
+// So measure the page instead. The sheet is a known object: 20.86" deep for a
+// broadsheet, of which the top 0.3289" is folio bar. If the page is that deep,
+// the live area starts below the bar. If the page is already the live area,
+// it starts at the page edge. Only when the page is neither do we fall back
+// to the template's margins, and say so.
+function liveAreaOrigin(pageObj, format) {
   const b = pageObj.bounds;                       // [y1, x1, y2, x2]
+  const f = (typeof PAGE_FORMATS !== 'undefined' && PAGE_FORMATS[format]) || null;
+  const pageHIn = (b[2] - b[0]) / 72;
+  const pageWIn = (b[3] - b[1]) / 72;
+
   const mp = pageObj.marginPreferences;
   const mTop = typeof mp.top === 'number' ? mp.top : 36;
   const mLeft = typeof mp.left === 'number' ? mp.left : 36;
+
+  if (!f) return { top: b[0] + mTop, left: b[1] + mLeft, how: 'margins (no grid for format)' };
+
+  // Vertical.
+  let top, howTop;
+  if (Math.abs(pageHIn - f.pageDepthIn) < 0.05) {
+    top = b[0];
+    howTop = 'page is the live area';
+  } else if (f.sheetDepthIn && Math.abs(pageHIn - f.sheetDepthIn) < 0.2) {
+    top = b[0] + (f.folioBarIn || 0) * 72;
+    howTop = `full sheet, below the ${f.folioBarIn}" folio bar`;
+  } else {
+    top = b[0] + mTop;
+    howTop = `margins (page ${pageHIn.toFixed(3)}" matches neither live ${f.pageDepthIn}" nor sheet ${f.sheetDepthIn || '?'}")`;
+  }
+
+  // Horizontal. No side furniture is documented, so a page that is already
+  // the live width starts at its own edge; anything wider is centred on it.
+  let left, howLeft;
+  if (Math.abs(pageWIn - f.pageWidthIn) < 0.05) {
+    left = b[1];
+    howLeft = 'page is the live width';
+  } else if (pageWIn > f.pageWidthIn) {
+    left = b[1] + ((pageWIn - f.pageWidthIn) / 2) * 72;
+    howLeft = 'centred on the sheet';
+  } else {
+    left = b[1] + mLeft;
+    howLeft = 'margins';
+  }
+
+  return { top, left, how: `${howTop}; ${howLeft}` };
+}
+
+function adSlotBounds(pageObj, format, slot, origin) {
+  const o = origin || liveAreaOrigin(pageObj, format);
 
   // Width comes off the slot when the platform resolved it (it always does
   // for a placed ad); columnOffsetIn/columnWidthIn are the fallback so a slot
@@ -3822,8 +3876,8 @@ function adSlotBounds(pageObj, format, slot) {
   if (!Number.isFinite(widthIn) || !Number.isFinite(offsetIn)) {
     throw new Error(`slot for order ${slot.orderId || slot.id} has no resolvable width on the ${format} grid`);
   }
-  const top = b[0] + mTop + Number(slot.topOffsetIn || 0) * 72;
-  const left = b[1] + mLeft + offsetIn * 72;
+  const top = o.top + Number(slot.topOffsetIn || 0) * 72;
+  const left = o.left + offsetIn * 72;
   return [top, left, top + Number(slot.depthIn) * 72, left + widthIn * 72];
 }
 
@@ -3904,6 +3958,10 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
   if (!slots.length) return { placed: 0, missed: 0 };
 
   const format = planPage.format;
+  // Once per page, not per ad: the answer is a property of the page, and
+  // logging it once gives a single line to read when an ad lands wrong.
+  const origin = liveAreaOrigin(pageObj, format);
+  console.log(`[wvnews-print] live area on ${planPage.folio || '?'}: ${origin.how}`);
   const vp = doc.viewPreferences;
   const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
   vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
@@ -3913,7 +3971,7 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
     for (const slot of slots) {
       const { id: orderId, frameLabel } = slotIdentity(slot);
       try {
-        const bounds = adSlotBounds(pageObj, format, slot);
+        const bounds = adSlotBounds(pageObj, format, slot, origin);
         const rect = pageObj.rectangles.add({ geometricBounds: bounds });
         try { rect.label = frameLabel; } catch (e) {}
         try { rect.strokeWeight = 0; } catch (e) {}
@@ -3925,11 +3983,30 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
           const buf = await fetchBinary(content.fileUrl);
           const ext = (String(content.fileUrl).split('?')[0].split('.').pop() || 'pdf').slice(0, 4);
           const tempPath = await writeTemp(`${frameLabel}.${ext}`, buf);
-          rect.place(tempPath);
+          // Fit content to frame, set BOTH ways round.
+          //
+          // The frame is the SOLD SIZE — that is the thing the advertiser
+          // paid for and the thing the page was built around — so the
+          // artwork is fitted to the frame, never the frame to the artwork.
           // FILL_PROPORTIONALLY would crop an ad that is a hair off its
-          // nominal size. The frame IS the sold size, so the artwork is
-          // fitted to it rather than the frame to the artwork.
-          try { rect.fit(id.FitOptions.CONTENT_TO_FRAME); } catch (e) {}
+          // nominal size, and FRAME_TO_CONTENT would resize the sold space.
+          //
+          // The fitting option is set BEFORE the place so it applies as the
+          // graphic lands, and fit() is called after as well, because a frame
+          // that already held content ignores fittingOnEmptyFrame. Failures
+          // are logged rather than swallowed: silently un-fitted artwork is
+          // exactly the bug that is hard to see on a 75-point thumbnail.
+          try {
+            rect.frameFittingOptions.fittingOnEmptyFrame = id.EmptyFrameFittingOptions.CONTENT_TO_FRAME;
+          } catch (e) {
+            console.warn('[wvnews-print] could not preset fitting for', frameLabel, e?.message || e);
+          }
+          rect.place(tempPath);
+          try {
+            rect.fit(id.FitOptions.CONTENT_TO_FRAME);
+          } catch (e) {
+            console.warn('[wvnews-print] fit content-to-frame failed for', frameLabel, e?.message || e);
+          }
         } else {
           drawHoldingBox(id, doc, pageObj, rect, slot);
         }
