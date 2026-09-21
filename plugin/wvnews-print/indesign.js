@@ -2667,7 +2667,7 @@ function masterNameForFolio(folio, snippet) {
   return parseInt(m[1], 10) === 1 ? OPENER_MASTER_NAME : INSIDE_MASTER_NAME;
 }
 
-function applyMasterByFolio(doc, folio, snippet) {
+function applyMasterByFolio(doc, folio, snippet, diag) {
   const wanted = masterNameForFolio(folio, snippet);
   // Strip the leading "<prefix>-" from the target so we can match by
   // baseName too — InDesign's master spread name is `<prefix>-<baseName>`
@@ -2700,8 +2700,15 @@ function applyMasterByFolio(doc, folio, snippet) {
       }
     }
     if (!chosen) {
-      console.warn(`[wvnews-print] master "${wanted}" not found in template. Available masters: ${names.join(' | ')}`);
-      return false;   // the caller reports this; the list is in the console
+      // The available names go in the REPORT, not just the console. Which
+      // masters a template actually contains is the one fact that decides
+      // whether this is a naming mismatch or a missing master, and it cannot
+      // be guessed from the outside.
+      const msg = `MASTER NOT APPLIED — wanted "${wanted}" for ${folio}. `
+        + `Template has: ${names.length ? names.join(' | ') : '(no masters at all)'}`;
+      if (diag) diag.push(msg);
+      console.warn(`[wvnews-print] ${msg}`);
+      return false;
     }
     const page = doc.pages.item(0);
     let priorName = '';
@@ -4650,7 +4657,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
 
       // Apply the right master to page 1. Snippet pageRole wins if set;
       // otherwise fall back to position (A1/B1/C1 = opener, else inside).
-      const masterApplied = applyMasterByFolio(doc, pg.folio, snip);
+      const masterApplied = applyMasterByFolio(doc, pg.folio, snip, diag);
 
       // Place the assigned snippet, if any.
       let placed = false;
@@ -4675,10 +4682,9 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         diag.push('NO SNIPPET ASSIGNED to this folio — page built from masters only, '
           + 'so it has no editorial frames. Assign one in the edition editor.');
       }
-      diag.push(masterApplied
-        ? `master: ${masterApplied}`
-        : 'MASTER NOT APPLIED — the template has no master matching this folio, '
-          + 'so the page has no masthead or folio furniture either.');
+      // On failure applyMasterByFolio has already pushed the specific reason,
+      // including what the template actually contains.
+      if (masterApplied) diag.push(`master: ${masterApplied}`);
 
       // Place any content assets (stories/ads/classifieds) the editor
       // assigned to this folio. Each asset's payload is fetched on
