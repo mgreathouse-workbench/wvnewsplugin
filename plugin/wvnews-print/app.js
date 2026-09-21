@@ -190,7 +190,17 @@ const state = {
   // globalThis so a UDT hot-reload while a page is open doesn't drop
   // it — paired with the heartbeat timer below.
   // Shape: { editionId, folio, tempPath, fileName, lock }
-  activeCheckout: G.__wvnewsPlugin.activeCheckout || null,
+  // Pages this user currently holds, keyed `<editionId>::<folio>`.
+  //
+  // Was a single `activeCheckout`, which made the panel refuse to open a
+  // second page. Nothing on the server required that — locks are per page and
+  // per user — and a layout artist adjusting a jump has to see the source and
+  // the destination at once, since a jump IS the relationship between two
+  // pages. Carried on the global so it survives a panel reload.
+  checkouts: G.__wvnewsPlugin.checkouts
+    || (G.__wvnewsPlugin.activeCheckout
+      ? { [`${G.__wvnewsPlugin.activeCheckout.editionId}::${G.__wvnewsPlugin.activeCheckout.folio}`]: G.__wvnewsPlugin.activeCheckout }
+      : {}),
 };
 
 // Heartbeat timer handle. Stored off-state so render() doesn't try to
@@ -388,14 +398,17 @@ function renderMain() {
     el.onclick = () => onCheckoutPage(el.getAttribute('data-folio-checkout'));
   }
   for (const el of document.querySelectorAll('[data-folio-checkin]')) {
-    el.onclick = () => onCheckinActiveCheckout();
+    el.onclick = () => onCheckinPage(el.getAttribute('data-folio-checkin'));
   }
   // Top banner Check in button + refresh-locks button.
-  const btnActiveCheckin = $('btn-active-checkin');
-  if (btnActiveCheckin) btnActiveCheckin.onclick = () => onCheckinActiveCheckout();
+  for (const el of document.querySelectorAll('[data-held-checkin]')) {
+    el.onclick = () => onCheckinPage(el.getAttribute('data-held-checkin'));
+  }
+  const btnCheckinAll = $('btn-checkin-all');
+  if (btnCheckinAll) btnCheckinAll.onclick = () => onCheckinAllHeld();
   const btnRefreshLocks = $('btn-refresh-locks');
   if (btnRefreshLocks) btnRefreshLocks.onclick = () => {
-    const eid = state.activeCheckout?.editionId || state.selectedEditionId;
+    const eid = state.selectedEditionId || (heldPages()[0] && heldPages()[0].editionId);
     if (eid) refreshEditionPages(eid);
   };
   const btnPubBack = $('btn-pub-back');
@@ -988,23 +1001,54 @@ function renderEditionForm() {
 // in-row below; this banner is the "fast action" path so the designer
 // doesn't have to scroll a 20-page list to check in.
 function renderActiveCheckoutBanner(pub) {
-  const co = state.activeCheckout;
-  if (!co || co.editionId !== pub.id) return '';
-  const left = minutesLeft(co.lock?.expiresAt);
+  const held = heldFor(pub.id);
+  if (!held.length) return '';
+  const rows = held
+    .slice()
+    .sort((a, b) => String(a.folio).localeCompare(String(b.folio), undefined, { numeric: true }))
+    .map(co => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:1px 0;">
+        <div style="font-size:11px;color:#0a4a1c;">
+          <b>${escapeHtml(co.folio)}</b> · ${minutesLeft(co.lock?.expiresAt)}m left
+        </div>
+        <button class="primary" data-held-checkin="${escapeHtml(co.folio)}"
+          style="font-size:11px;padding:3px 8px;" ${state.busy ? 'disabled' : ''}>Check in</button>
+      </div>`).join('');
   return `
     <div style="margin:6px 0;padding:6px 8px;border-radius:4px;background:#e6f4ea;border:1px solid #a8d5b8;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <div style="font-size:11px;color:#0a4a1c;">
-          <b>${escapeHtml(co.folio)}</b> checked out · ${left}m left
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+        <div style="font-size:10px;font-weight:700;color:#0a4a1c;text-transform:uppercase;letter-spacing:.04em;">
+          ${held.length === 1 ? '1 page checked out' : `${held.length} pages checked out`}
         </div>
-        <button class="primary" id="btn-active-checkin" style="font-size:11px;padding:3px 8px;" ${state.busy ? 'disabled' : ''}>
-          Check in
-        </button>
+        ${held.length > 1
+          ? `<button class="secondary" id="btn-checkin-all" style="font-size:10px;padding:2px 6px;" ${state.busy ? 'disabled' : ''}>Check in all</button>`
+          : ''}
       </div>
+      ${rows}
       <div style="font-size:9px;color:#0a4a1c;margin-top:2px;">
         Save in InDesign (Cmd-S) before checking in — Check in reads the saved file.
+        ${held.length > 1 ? 'Each page is read from its own saved file, so save them all.' : ''}
       </div>
     </div>`;
+}
+
+// Check in everything held on this edition, in folio order.
+//
+// Sequential, not parallel: each check-in saves and closes a document, and
+// two of those racing inside InDesign is how a place gun or a modal dialog
+// ends up owned by the wrong one. A failure stops the run rather than
+// pressing on, so the reason stays on screen instead of being overwritten by
+// the next page's result.
+async function onCheckinAllHeld() {
+  const pub = state.selectedEdition;
+  if (!pub) return;
+  const held = heldFor(pub.id)
+    .slice()
+    .sort((a, b) => String(a.folio).localeCompare(String(b.folio), undefined, { numeric: true }));
+  for (const co of held) {
+    await onCheckinPage(co.folio);
+    if (state.error) return;
+  }
 }
 
 function renderEditionDetail(pub) {
@@ -1032,7 +1076,7 @@ function renderEditionDetail(pub) {
         const snipClass = snip ? '' : 'style="color:#a04040;"';
         const pf = state.editionPages[p.folio];
         const lock = pf?.lock;
-        const youHold = !!(lock && state.activeCheckout?.folio === p.folio);
+        const youHold = !!(lock && isHeld(pub.id, p.folio));
         // Lock state badge string
         let lockText, lockColor;
         if (!pf) { lockText = '–'; lockColor = '#a0a0a0'; }
@@ -1298,31 +1342,50 @@ async function refreshEditionPages(editionId) {
   }
 }
 
+const coKey = (editionId, folio) => `${editionId}::${folio}`;
+const heldPages = () => Object.values(state.checkouts || {});
+const heldFor = (editionId) => heldPages().filter(c => c.editionId === editionId);
+const isHeld = (editionId, folio) => !!(state.checkouts || {})[coKey(editionId, folio)];
+function setCheckout(co) {
+  state.checkouts = { ...state.checkouts, [coKey(co.editionId, co.folio)]: co };
+  G.__wvnewsPlugin.checkouts = state.checkouts;
+}
+function dropCheckout(editionId, folio) {
+  const next = { ...state.checkouts };
+  delete next[coKey(editionId, folio)];
+  state.checkouts = next;
+  G.__wvnewsPlugin.checkouts = next;
+  if (!Object.keys(next).length) stopHeartbeat();
+}
+
 function startHeartbeat() {
   stopHeartbeat();
   G.__wvnewsPlugin.heartbeatTimer = setInterval(async () => {
-    const co = state.activeCheckout;
-    if (!co) { stopHeartbeat(); return; }
-    try {
-      const r = await heartbeatPage({ editionId: co.editionId, folio: co.folio });
-      if (r?.page?.lock) {
-        state.activeCheckout = { ...co, lock: r.page.lock };
-        G.__wvnewsPlugin.activeCheckout = state.activeCheckout;
-        // Also keep editionPages in sync so the row badge moves
-        state.editionPages = { ...state.editionPages, [co.folio]: r.page };
-        render();
+    const held = heldPages();
+    if (!held.length) { stopHeartbeat(); return; }
+    let changed = false;
+    // Every page the user holds, not just one. A lock that stops being
+    // renewed becomes available to someone else after the TTL, so a page
+    // left out of the heartbeat is a page that can be taken mid-edit.
+    for (const co of held) {
+      try {
+        const r = await heartbeatPage({ editionId: co.editionId, folio: co.folio });
+        if (r?.page?.lock) {
+          setCheckout({ ...co, lock: r.page.lock });
+          state.editionPages = { ...state.editionPages, [co.folio]: r.page };
+          changed = true;
+        }
+      } catch (err) {
+        // 423 means someone broke this lock. Surface it and let go of that
+        // page only — the others are still ours.
+        if (err.statusCode === 423 || /423|lock/i.test(err.message)) {
+          state.error = `Lock on ${co.folio} was broken: ${err.message}`;
+          dropCheckout(co.editionId, co.folio);
+          changed = true;
+        }
       }
-    } catch (err) {
-      // 423 means someone broke our lock. Surface + abandon.
-      if (err.statusCode === 423 || /423|lock/i.test(err.message)) {
-        state.error = `Lock on ${co.folio} was broken: ${err.message}`;
-        state.activeCheckout = null;
-        G.__wvnewsPlugin.activeCheckout = null;
-        stopHeartbeat();
-        render();
-      }
-      // Other errors (network blip) — silent, try again next tick.
     }
+    if (changed) render();
   }, HEARTBEAT_INTERVAL_MS);
 }
 
@@ -1340,10 +1403,6 @@ function stopHeartbeat() {
 async function onCheckoutPage(folio) {
   const pub = state.selectedEdition;
   if (!pub) { state.error = 'No edition selected.'; render(); return; }
-  if (state.activeCheckout && state.activeCheckout.folio !== folio) {
-    state.error = `Check in ${state.activeCheckout.folio} before opening another page.`;
-    render(); return;
-  }
   state.busy = true; state.error = ''; state.info = ''; render();
   try {
     let hostName = '';
@@ -1365,16 +1424,17 @@ async function onCheckoutPage(folio) {
       opened = await createBlankPage({ editionId: pub.id, folio });
       state.info = `${folio} opened blank (no template uploaded yet — your first check-in writes v1).`;
     }
-    state.activeCheckout = {
+    setCheckout({
       editionId: pub.id,
       folio,
       tempPath: opened.tempPath,
       fileName: opened.fileName,
       lock: co.page.lock,
-    };
-    G.__wvnewsPlugin.activeCheckout = state.activeCheckout;
+    });
     state.editionPages = { ...state.editionPages, [folio]: co.page };
-    state.info = `${folio} checked out — opens in InDesign.`;
+    const n = heldFor(pub.id).length;
+    state.info = `${folio} checked out — opens in InDesign.`
+      + (n > 1 ? ` You now hold ${n} pages; check each one in when you are done with it.` : '');
     startHeartbeat();
   } catch (err) {
     if (err.statusCode === 423 && err.lock) {
@@ -1389,29 +1449,42 @@ async function onCheckoutPage(folio) {
 
 // Save the active doc → read bytes → POST as new version → close doc
 // → clear active-checkout state → stop heartbeat.
-async function onCheckinActiveCheckout(note = '') {
-  const co = state.activeCheckout;
-  if (!co) { state.error = 'Nothing checked out.'; render(); return; }
+async function onCheckinPage(folio, note = '') {
+  const pub = state.selectedEdition;
+  const co = folio
+    ? (state.checkouts || {})[coKey(pub ? pub.id : state.selectedEditionId, folio)]
+    : heldPages()[0];
+  if (!co) { state.error = `${folio || 'That page'} is not checked out.`; render(); return; }
   state.busy = true; state.error = ''; state.info = ''; render();
   try {
-    const doc = findOpenDocByTempPath(co.tempPath) || activeDocument();
+    // NO fallback to activeDocument().
+    //
+    // That fallback was safe while exactly one page could be checked out: if
+    // the lookup missed, the active document was the page. With several open
+    // it would read whichever window happens to be in front and upload it as
+    // THIS folio — checking A4's layout in as A9, overwriting a page nobody
+    // touched. Refusing is the only safe answer.
+    const doc = findOpenDocByTempPath(co.tempPath);
+    if (!doc) {
+      throw new Error(`Could not find the open document for ${co.folio}. `
+        + `If you closed it without checking in, re-check-out the page. `
+        + `Nothing was uploaded.`);
+    }
     const bytes = await saveAndReadPageBytes({ doc, fileName: co.fileName });
     const result = await checkinPage({
       editionId: co.editionId, folio: co.folio, bytes, note,
     });
     state.editionPages = { ...state.editionPages, [co.folio]: result.page };
     await closePageDoc(doc);
-    state.activeCheckout = null;
-    G.__wvnewsPlugin.activeCheckout = null;
-    stopHeartbeat();
-    state.info = `${co.folio} checked in as v${result.page.currentVersion}.`;
+    dropCheckout(co.editionId, co.folio);
+    const left = heldFor(co.editionId).length;
+    state.info = `${co.folio} checked in as v${result.page.currentVersion}.`
+      + (left ? ` Still holding ${left}: ${heldFor(co.editionId).map(c => c.folio).join(', ')}.` : '');
   } catch (err) {
     if (err.statusCode === 423) {
       state.error = `Lock on ${co.folio} no longer valid — your save was NOT uploaded. ${err.message}`;
-      // Abandon the local checkout state; user has to manually re-acquire.
-      state.activeCheckout = null;
-      G.__wvnewsPlugin.activeCheckout = null;
-      stopHeartbeat();
+      // Let go of THAT page only. Any others are still legitimately held.
+      dropCheckout(co.editionId, co.folio);
     } else {
       state.error = err.message;
     }
