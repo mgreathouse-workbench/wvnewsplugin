@@ -2701,7 +2701,7 @@ function applyMasterByFolio(doc, folio, snippet) {
     }
     if (!chosen) {
       console.warn(`[wvnews-print] master "${wanted}" not found in template. Available masters: ${names.join(' | ')}`);
-      return false;
+      return false;   // the caller reports this; the list is in the console
     }
     const page = doc.pages.item(0);
     let priorName = '';
@@ -2710,7 +2710,9 @@ function applyMasterByFolio(doc, folio, snippet) {
     let finalName = '';
     try { finalName = (page.appliedMaster && page.appliedMaster.name) || '(none)'; } catch { finalName = '(unknown)'; }
     console.log(`[wvnews-print] folio ${folio}: master ${priorName} → ${finalName} (wanted ${wanted})`);
-    return true;
+    // The NAME, not just success: "master: A-Inside" in the build report says
+    // which furniture the page actually got, where `true` says nothing.
+    return finalName || true;
   } catch (e) {
     console.warn('[wvnews-print] applyMaster failed:', e?.message || e);
     return false;
@@ -4648,7 +4650,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
 
       // Apply the right master to page 1. Snippet pageRole wins if set;
       // otherwise fall back to position (A1/B1/C1 = opener, else inside).
-      applyMasterByFolio(doc, pg.folio, snip);
+      const masterApplied = applyMasterByFolio(doc, pg.folio, snip);
 
       // Place the assigned snippet, if any.
       let placed = false;
@@ -4658,8 +4660,25 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         const tempPath = await writeTemp(`${pg.snippetId}.idms`, buf);
         notify(pg.folio, i, 'place');
         placed = await placeSnippetIntoActiveDoc(doc, tempPath, snip);
-        if (!placed) console.warn('[wvnews-print] build: snippet did not land for', pg.folio);
+        if (!placed) {
+          diag.push(`SNIPPET FAILED TO LAND — "${snip && snip.name ? snip.name : pg.snippetId}" `
+            + `downloaded but nothing appeared on the page.`);
+          console.warn('[wvnews-print] build: snippet did not land for', pg.folio);
+        }
+      } else {
+        // NOT the same as a snippet that failed. A new edition's pages are
+        // created with snippetId: null and the wizard fills them in one page
+        // at a time, so an unassigned folio is the ordinary state of a page
+        // nobody has set up yet — and the page builds with masters only, no
+        // editorial wells. Reported by name so it is not read as a fault in
+        // the plugin.
+        diag.push('NO SNIPPET ASSIGNED to this folio — page built from masters only, '
+          + 'so it has no editorial frames. Assign one in the edition editor.');
       }
+      diag.push(masterApplied
+        ? `master: ${masterApplied}`
+        : 'MASTER NOT APPLIED — the template has no master matching this folio, '
+          + 'so the page has no masthead or folio furniture either.');
 
       // Place any content assets (stories/ads/classifieds) the editor
       // assigned to this folio. Each asset's payload is fetched on
