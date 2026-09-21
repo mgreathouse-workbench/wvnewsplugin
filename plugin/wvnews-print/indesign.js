@@ -4036,9 +4036,17 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, dia
   // the panel shows them after a build, where they cannot be missed.
   const say = (line) => { console.log(`[wvnews-print] ${line}`); if (diag) diag.push(line); };
   const slots = Array.isArray(planPage && planPage.slots) ? planPage.slots : [];
-  if (!slots.length) return { placed: 0, missed: 0 };
 
   const format = planPage.format;
+  if (!slots.length) {
+    // Still report the page we measured. A silent return here is what made
+    // "the ads are too high" indistinguishable from "this code never ran".
+    const o = liveAreaOrigin(pageObj, format);
+    const b0 = pageObj.bounds;
+    say(`page ${((b0[3] - b0[1]) / 72).toFixed(3)}x${((b0[2] - b0[0]) / 72).toFixed(3)}in`
+      + `, live area starts ${((o.top - b0[0]) / 72).toFixed(4)}in down — ${o.how}`);
+    return { placed: 0, missed: 0 };
+  }
   // Once per page, not per ad: the answer is a property of the page, and
   // logging it once gives a single line to read when an ad lands wrong.
   const origin = liveAreaOrigin(pageObj, format);
@@ -4429,11 +4437,38 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, pl
       adContent[id] = null;
     }
   }
-  if (plannedSlots.length) {
-    const adStats = await placeAdSlotsForPage(doc, pageObj, planPage, adContent, jumpCtx && jumpCtx.diag);
+  const diag = (jumpCtx && jumpCtx.diag) || null;
+  const say = (line) => { console.log(`[wvnews-print] ${line}`); if (diag) diag.push(line); };
+
+  // Called unconditionally: with no slots it reports the page it measured and
+  // returns. Guarding the call is what left a page silent, which made "the ads
+  // are too high" indistinguishable from "this code never ran".
+  if (planPage) {
+    const adStats = await placeAdSlotsForPage(doc, pageObj, planPage, adContent, diag);
     placed += adStats.placed;
     missed += adStats.missed;
     if (adStats.placed) console.log(`[wvnews-print] built ${adStats.placed} ad well(s) from the plan on ${page.folio}`);
+  } else {
+    say('NO PAGE PLAN for this folio — the platform returned no plan entry, so every '
+      + 'ad here falls back to the template frame and ignores the grid geometry.');
+  }
+  if (planPage && !plannedSlots.length) {
+    // No slots means the artist never POSITIONED these ads on the web grid.
+    // They are assigned to the folio, so they still get placed — but by the
+    // old path, into the template snippet's single generic `ad` frame, at
+    // whatever position the template puts it. None of the grid geometry
+    // applies to them, which is why an ad can sit in the wrong place no
+    // matter what the live-area rule computes. Say so plainly: it is a
+    // layout problem, not a plugin one, and the fix is to drag the ads onto
+    // the grid.
+    const orderAssets = list.filter(a => a.kind === 'order' || a.kind === 'filler').length;
+    if (orderAssets) {
+      say(`NO AD WELLS BUILT — the plan has 0 positioned ads for this page, so `
+        + `${orderAssets} ad(s) fall back to the template's generic 'ad' frame and ignore the `
+        + `grid geometry. Position them on the Page Grid to place them by their real size.`);
+    } else {
+      say('no ads on this page');
+    }
   }
 
   for (const a of list) {
