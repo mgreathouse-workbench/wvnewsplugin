@@ -1483,7 +1483,22 @@ async function onBuildEdition() {
     state.busy = false;
     state.buildProgress = '';
     render();
+    // The summary renders at the TOP of the panel, above the tab row, while
+    // Build Pages is clicked from well down inside the Editions view. On a
+    // short panel the result — including the per-page geometry notes — lands
+    // entirely off screen, and it reads as though nothing was reported at all.
+    scrollResultIntoView();
   }
+}
+
+// Bring the build result into view after a long-running action.
+function scrollResultIntoView() {
+  try {
+    const el = document.querySelector('.alert-error') || document.querySelector('.alert-info');
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'start' });
+    }
+  } catch (e) { /* a panel that cannot scroll still shows the alert */ }
 }
 
 // Open the create/edit form. If an edition is passed, we go into
