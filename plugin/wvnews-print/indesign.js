@@ -3891,50 +3891,83 @@ async function placeOrderAsset(page, spread, asset) {
 // it starts at the page edge. Only when the page is neither do we fall back
 // to the template's margins, and say so.
 function liveAreaOrigin(pageObj, format) {
-  const b = pageObj.bounds;                       // [y1, x1, y2, x2]
+  const b = pageObj.bounds;                       // [y1, x1, y2, x2], POINTS
   const f = (typeof PAGE_FORMATS !== 'undefined' && PAGE_FORMATS[format]) || null;
-  const pageHIn = (b[2] - b[0]) / 72;
-  const pageWIn = (b[3] - b[1]) / 72;
-
   const mp = pageObj.marginPreferences;
-  const mTop = typeof mp.top === 'number' ? mp.top : 36;
-  const mLeft = typeof mp.left === 'number' ? mp.left : 36;
+  const n = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+  const mTop = n(mp && mp.top), mLeft = n(mp && mp.left);
+  const mBottom = n(mp && mp.bottom), mRight = n(mp && mp.right);
 
-  if (!f) return { top: b[0] + mTop, left: b[1] + mLeft, how: 'margins (no grid for format)' };
+  const pageTop = b[0], pageLeft = b[1];
+  const pageH = b[2] - b[0], pageW = b[3] - b[1];
 
-  // Vertical.
+  if (!f) return { top: pageTop + mTop, left: pageLeft + mLeft, how: 'margins (no grid for format)' };
+
+  // Two candidate rectangles, best first.
   //
-  // Stated as "how much taller than the live area is this page", rather than
-  // as a list of known sheet sizes. A template cut to the full 20.86" trim and
-  // one cut to 20.75" (trim less the grey bar) are the same case — both carry
-  // the folio bar above the live area — and a rule that only recognised exact
-  // sheet depths would send the second one down the margins path.
+  // The MARGIN BOX comes first because a press template is normally drawn
+  // with bleed or slug outside the trim and its margins set to the trim. A
+  // real WV News broadsheet template is an 11 x 21.4in page with 0.25in
+  // margins — so the margin box is 10.5 x 20.9in, which IS the trimmed sheet,
+  // while the page box is half an inch bigger in both directions. Measuring
+  // the page box there puts every ad a quarter inch high and a quarter inch
+  // left.
+  //
+  // The PAGE BOX is the fallback, for a template with no margins set, where
+  // the two boxes are the same rectangle anyway.
+  const boxes = [
+    { name: 'margin box', top: pageTop + mTop, left: pageLeft + mLeft,
+      h: pageH - mTop - mBottom, w: pageW - mLeft - mRight },
+    { name: 'page box', top: pageTop, left: pageLeft, h: pageH, w: pageW },
+  ];
+
   const folioIn = f.folioBarIn || 0;
-  const extraIn = pageHIn - f.pageDepthIn;
-  let top, howTop;
-  if (Math.abs(extraIn) < 0.05) {
-    top = b[0];
-    howTop = `page IS the live area (${f.pageDepthIn}")`;
-  } else if (folioIn > 0 && extraIn >= folioIn - 0.02) {
-    top = b[0] + folioIn * 72;
-    howTop = `page is ${extraIn.toFixed(3)}" over the live area — live starts below the ${folioIn}" folio bar`;
-  } else {
-    top = b[0] + mTop;
-    howTop = `margins — page ${pageHIn.toFixed(3)}" is ${extraIn.toFixed(3)}" over the live area, less than a folio bar, so the furniture cannot be identified`;
+
+  // Vertical: does this box hold the live area, and is the furniture above it?
+  let top = null, howTop = '';
+  for (const box of boxes) {
+    if (!(box.h > 0)) continue;
+    const hIn = box.h / 72;
+    const extraIn = hIn - f.pageDepthIn;
+    if (Math.abs(extraIn) < 0.05) {
+      top = box.top;
+      howTop = `${box.name} (${hIn.toFixed(3)}in) IS the live area`;
+      break;
+    }
+    if (folioIn > 0 && extraIn >= folioIn - 0.05) {
+      top = box.top + folioIn * 72;
+      howTop = `${box.name} is ${hIn.toFixed(3)}in, ${extraIn.toFixed(3)}in over the live area`
+        + ` — live starts ${folioIn}in below its top edge`;
+      break;
+    }
+  }
+  if (top == null) {
+    top = pageTop + mTop;
+    howTop = `margins — neither the margin box (${(boxes[0].h / 72).toFixed(3)}in) nor the page`
+      + ` (${(pageH / 72).toFixed(3)}in) can be reconciled with a ${f.pageDepthIn}in live area`;
   }
 
-  // Horizontal. No side furniture is documented, so a page that is already
-  // the live width starts at its own edge; anything wider is centred on it.
-  let left, howLeft;
-  if (Math.abs(pageWIn - f.pageWidthIn) < 0.05) {
-    left = b[1];
-    howLeft = 'page is the live width';
-  } else if (pageWIn > f.pageWidthIn) {
-    left = b[1] + ((pageWIn - f.pageWidthIn) / 2) * 72;
-    howLeft = 'centred on the sheet';
-  } else {
-    left = b[1] + mLeft;
-    howLeft = 'margins';
+  // Horizontal: no side furniture is documented, so a box that is already the
+  // live width starts at its own left edge; a wider one is centred on it.
+  let left = null, howLeft = '';
+  for (const box of boxes) {
+    if (!(box.w > 0)) continue;
+    const wIn = box.w / 72;
+    if (Math.abs(wIn - f.pageWidthIn) < 0.05) {
+      left = box.left;
+      howLeft = `${box.name} (${wIn.toFixed(3)}in) IS the live width`;
+      break;
+    }
+  }
+  if (left == null) {
+    const wIn = pageW / 72;
+    if (wIn > f.pageWidthIn) {
+      left = pageLeft + ((wIn - f.pageWidthIn) / 2) * 72;
+      howLeft = `centred on a ${wIn.toFixed(3)}in page`;
+    } else {
+      left = pageLeft + mLeft;
+      howLeft = 'margins';
+    }
   }
 
   return { top, left, how: `${howTop}; ${howLeft}` };
@@ -4038,6 +4071,21 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, dia
   const slots = Array.isArray(planPage && planPage.slots) ? planPage.slots : [];
 
   const format = planPage.format;
+  // Units FIRST, before anything reads pageObj.bounds.
+  //
+  // InDesign returns geometry in the document's current ruler units. This
+  // document had them set to inches, so bounds came back as inches while
+  // every calculation here assumes points — a 21.4in page measured as 0.297,
+  // which matches no known sheet, so the rule fell through to margins and
+  // returned 0.25 INCHES where the caller then used it as 0.25 POINTS. The
+  // live area started 0.0035in down instead of 0.3289in, and every ad on the
+  // page sat a folio bar high.
+  let placed = 0, missed = 0;
+  const vp = doc.viewPreferences;
+  const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
+  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+  try {
   if (!slots.length) {
     // Still report the page we measured. A silent return here is what made
     // "the ads are too high" indistinguishable from "this code never ran".
@@ -4057,12 +4105,6 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, dia
   say(`page ${((pb[3] - pb[1]) / 72).toFixed(3)}x${((pb[2] - pb[0]) / 72).toFixed(3)}in`
     + `, live area starts ${((origin.top - pb[0]) / 72).toFixed(4)}in down / `
     + `${((origin.left - pb[1]) / 72).toFixed(4)}in in — ${origin.how}`);
-  const vp = doc.viewPreferences;
-  const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
-  vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
-  vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
-  let placed = 0, missed = 0;
-  try {
     for (const slot of slots) {
       const { id: orderId, frameLabel } = slotIdentity(slot);
       try {
