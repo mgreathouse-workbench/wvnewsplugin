@@ -1461,6 +1461,10 @@ async function onBuildEdition() {
       lines.push(r.saved
         ? `  ✓ ${r.folio}${r.version ? ` v${r.version}` : ''}${r.placed ? '' : ' (no snippet placed)'}${r.assets && r.assets.placed ? ` + ${r.assets.placed} asset${r.assets.placed === 1 ? '' : 's'}` : ''}${r.assets && r.assets.missed ? ` (${r.assets.missed} asset${r.assets.missed === 1 ? '' : 's'} missing)` : ''}`
         : `  ✗ ${r.folio} — ${r.error || 'failed'}`);
+      // Where the page geometry actually landed. Shown here rather than only
+      // in the console, because the panel is the one place a layout artist
+      // reliably looks when an ad is in the wrong place.
+      for (const d of (r.diag || [])) lines.push(`      ${d}`);
     }
     state.info = lines.join('\n');
 

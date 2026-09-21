@@ -84,6 +84,10 @@ label.field > .lbl { display: block; font-size: 10px; font-weight: 700;
 .alert {
   padding: 6px 10px; border-radius: 4px; font-size: 11px;
   margin: 6px 0;
+  /* The build summary is one line per page plus its geometry notes, joined
+     with newlines. Without this they collapse into a single run-on line and
+     the per-page detail is unreadable. */
+  white-space: pre-wrap;
 }
 .alert-error   { background: #fde8e8; color: #971515; border: 1px solid #f5b5b5; }
 .alert-info    { background: #e8f1fd; color: #1956b3; border: 1px solid #b8d6f5; }

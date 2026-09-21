@@ -4029,8 +4029,12 @@ function slotIdentity(slot) {
 //
 // `content` per slot (advertiser, fileUrl) is fetched by the caller, because
 // the plan is pure geometry — it deliberately knows nothing about artwork.
-async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
+async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, diag) {
   const id = host();
+  // Geometry facts go into `diag` as well as the console. Reading them should
+  // not depend on getting UXP Developer Tool's per-row Debug window open —
+  // the panel shows them after a build, where they cannot be missed.
+  const say = (line) => { console.log(`[wvnews-print] ${line}`); if (diag) diag.push(line); };
   const slots = Array.isArray(planPage && planPage.slots) ? planPage.slots : [];
   if (!slots.length) return { placed: 0, missed: 0 };
 
@@ -4042,10 +4046,9 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
   // Without the actual numbers, "the ads are still too high" cannot be told
   // apart from "the plugin was never reloaded".
   const pb = pageObj.bounds;
-  console.log(`[wvnews-print] live area on ${planPage.folio || '?'}: ${origin.how}`
-    + ` | page ${((pb[3] - pb[1]) / 72).toFixed(3)}x${((pb[2] - pb[0]) / 72).toFixed(3)}in`
-    + ` at x=${(pb[1] / 72).toFixed(3)} y=${(pb[0] / 72).toFixed(3)}`
-    + ` | live top ${((origin.top - pb[0]) / 72).toFixed(4)}in from page top`);
+  say(`page ${((pb[3] - pb[1]) / 72).toFixed(3)}x${((pb[2] - pb[0]) / 72).toFixed(3)}in`
+    + `, live area starts ${((origin.top - pb[0]) / 72).toFixed(4)}in down / `
+    + `${((origin.left - pb[1]) / 72).toFixed(4)}in in — ${origin.how}`);
   const vp = doc.viewPreferences;
   const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
   vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
@@ -4060,11 +4063,10 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
           // The first well on the page, in inches from the page's top edge.
           // Page size + live-area rule + this line together pin down exactly
           // where an ad went and why, with no guessing from a screenshot.
-          const pbb = pageObj.bounds;
-          console.log(`[wvnews-print] first ad well on ${planPage.folio || '?'}:`
-            + ` top ${((bounds[0] - pbb[0]) / 72).toFixed(4)}in, bottom ${((bounds[2] - pbb[0]) / 72).toFixed(4)}in`
-            + ` from page top (page is ${((pbb[2] - pbb[0]) / 72).toFixed(3)}in tall);`
-            + ` slot topOffsetIn=${slot.topOffsetIn} depthIn=${slot.depthIn}`);
+          say(`first ad: top ${((bounds[0] - pb[0]) / 72).toFixed(4)}in, `
+            + `bottom ${((bounds[2] - pb[0]) / 72).toFixed(4)}in from page top`
+            + ` (grid asked for topOffsetIn=${slot.topOffsetIn}, depthIn=${slot.depthIn});`
+            + ` ${(((pb[2] - pb[0]) - bounds[2]) / 72).toFixed(4)}in left below it`);
         }
         const rect = pageObj.rectangles.add({ geometricBounds: bounds });
         try { rect.label = frameLabel; } catch (e) {}
@@ -4428,7 +4430,7 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, pl
     }
   }
   if (plannedSlots.length) {
-    const adStats = await placeAdSlotsForPage(doc, pageObj, planPage, adContent);
+    const adStats = await placeAdSlotsForPage(doc, pageObj, planPage, adContent, jumpCtx && jumpCtx.diag);
     placed += adStats.placed;
     missed += adStats.missed;
     if (adStats.placed) console.log(`[wvnews-print] built ${adStats.placed} ad well(s) from the plan on ${page.folio}`);
@@ -4540,6 +4542,11 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
   for (const i of order) {
     const pg = pages[i];
     const pgIsJump = isJumpPage(pg);
+    // Geometry notes for THIS page, surfaced in the panel's build summary.
+    // The panel is the only place a layout artist reliably looks; UXP
+    // Developer Tool's per-row Debug window is easy to miss and easy to
+    // confuse with its unrelated "Debug Script" button.
+    const diag = [];
     let doc = null;
     try {
       // Acquire the page lock on the website before building, so the
@@ -4585,7 +4592,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         notify(pg.folio, i, 'assets');
         // Don't queue jumps off the jump page itself; only source pages
         // capture overflow (and only when a jump landing exists).
-        const jumpCtx = (jumpFolio && !pgIsJump) ? { jumpQueue, jumpFolio } : {};
+        const jumpCtx = (jumpFolio && !pgIsJump) ? { jumpQueue, jumpFolio, diag } : { diag };
         assetStats = await placeAssetsForPage(edition, pg, doc, styleMap, jumpCtx, planByFolio[pg.folio] || null);
         if (assetStats.placed) console.log(`[wvnews-print] placed ${assetStats.placed} asset(s) on ${pg.folio}, ${assetStats.missed} missed`);
       }
@@ -4653,14 +4660,14 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         console.warn('[wvnews-print] build: all close forms threw; doc + .idlk lock may linger for', pg.folio);
       }
       doc = null;
-      results.push({ folio: pg.folio, placed, saved: true, version, path, closed: closeOk, assets: assetStats });
+      results.push({ folio: pg.folio, placed, saved: true, version, path, closed: closeOk, assets: assetStats, diag });
       console.log('[wvnews-print] build: checked in', pg.folio, '->', path, closeOk ? '' : '(close failed)');
     } catch (e) {
       const msg = e?.message || String(e);
       console.error('[wvnews-print] build: failed for', pg.folio, msg);
       // Try not to leave a half-built doc open.
       if (doc) { try { doc.close(id.SaveOptions.NO); } catch {} }
-      results.push({ folio: pg.folio, placed: false, saved: false, error: msg });
+      results.push({ folio: pg.folio, placed: false, saved: false, error: msg, diag });
     }
   }
 
