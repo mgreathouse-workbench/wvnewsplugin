@@ -80,6 +80,7 @@ const {
   buildEditionPages,
   activeDocument, activePageLabel,
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
+  refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
 } = require('./indesign.js');
 const { isColorPage } = require('./color-placement.js');
@@ -406,6 +407,8 @@ function renderMain() {
   }
   const btnCheckinAll = $('btn-checkin-all');
   if (btnCheckinAll) btnCheckinAll.onclick = () => onCheckinAllHeld();
+  const btnRefreshAds = $('btn-refresh-ads');
+  if (btnRefreshAds) btnRefreshAds.onclick = () => onRefreshPlacedAds();
   const btnRefreshLocks = $('btn-refresh-locks');
   if (btnRefreshLocks) btnRefreshLocks.onclick = () => {
     const eid = state.selectedEditionId || (heldPages()[0] && heldPages()[0].editionId);
@@ -1025,6 +1028,14 @@ function renderActiveCheckoutBanner(pub) {
           : ''}
       </div>
       ${rows}
+      <div style="margin-top:4px;">
+        <button class="secondary" id="btn-refresh-ads" style="font-size:10px;padding:2px 6px;" ${state.busy ? 'disabled' : ''}>
+          Refresh placed ads
+        </button>
+        <span style="font-size:9px;color:#0a4a1c;margin-left:6px;">
+          re-places artwork approved since this page was built
+        </span>
+      </div>
       <div style="font-size:9px;color:#0a4a1c;margin-top:2px;">
         Save in InDesign (Cmd-S) before checking in — Check in reads the saved file.
         ${held.length > 1 ? 'Each page is read from its own saved file, so save them all.' : ''}
@@ -1039,6 +1050,38 @@ function renderActiveCheckoutBanner(pub) {
 // ends up owned by the wrong one. A failure stops the run rather than
 // pressing on, so the reason stays on screen instead of being overwritten by
 // the next page's result.
+// Re-place artwork on ads whose proofs were approved after the page was built.
+//
+// Scoped to the page that is open and to wells that are still empty, so it
+// never disturbs artwork a designer has already placed or cropped. The page
+// still has to be checked in afterwards — this changes the open document, not
+// the stored version, and saying so matters because the grid's staleness
+// marker only clears on check-in.
+async function onRefreshPlacedAds() {
+  const pub = state.selectedEdition;
+  const editionId = pub ? pub.id : state.selectedEditionId;
+  if (!editionId) { state.error = 'No edition selected.'; render(); return; }
+  state.busy = true; state.error = ''; state.info = ''; render();
+  try {
+    const r = await refreshPlacedAdsOnActivePage(editionId);
+    if (!r.checked) {
+      state.info = 'No labelled ad wells on this page — nothing to refresh.';
+    } else {
+      const lines = [
+        `Checked ${r.checked} ad well(s): ${r.replaced} updated, ${r.unchanged} unchanged`
+        + (r.failed ? `, ${r.failed} failed` : ''),
+      ];
+      for (const d of r.details) lines.push(`  ${d}`);
+      if (r.replaced) lines.push('Save (Cmd-S) and check the page in to publish the change.');
+      state.info = lines.join('\n');
+    }
+  } catch (err) {
+    state.error = `Refresh failed: ${err.message}`;
+  } finally {
+    state.busy = false; render(); scrollResultIntoView();
+  }
+}
+
 async function onCheckinAllHeld() {
   const pub = state.selectedEdition;
   if (!pub) return;

@@ -4249,6 +4249,97 @@ function placedAdOrderIdsOnActivePage() {
   return out;
 }
 
+// ── Refresh the ads already on this page ─────────────────────────────
+//
+// An ad's artwork is placed ONCE, while Build Pages runs. A proof approved
+// afterwards changes nothing about the page already built: it still holds the
+// grey holding box. Rebuilding the whole page would fix it and throw away
+// every manual change the designer has made since, which is too high a price
+// for one late approval.
+//
+// This re-places only the wells whose artwork has arrived, in the document
+// that is open, and leaves everything else exactly as it is.
+//
+// It works off the frame LABELS the build wrote — `order-<id>` and
+// `filler-<id>` — so it operates on the artist's real page rather than on a
+// plan, and a frame they moved or resized keeps its new geometry. The frame
+// is still the sold size as far as this is concerned; only its contents
+// change.
+async function refreshPlacedAdsOnActivePage(editionId) {
+  const id = host();
+  const doc = activeDocument();
+  if (!doc) throw new Error('No document is open.');
+  if (!editionId) throw new Error('No edition selected.');
+
+  const win = doc.layoutWindows.length ? doc.layoutWindows[0] : null;
+  const pageObj = win ? win.activePage : doc.pages.item(0);
+
+  // Every labelled ad well on this page, with its holding caption if it has
+  // one. The caption is a separate frame the build labelled
+  // `<frameLabel>-holding`, and it must go when real artwork lands or the
+  // order number prints over the ad.
+  const wells = [];
+  const captions = {};
+  for (const c of [pageObj, pageObj.parent]) {
+    for (const it of (c.allPageItems || [])) {
+      try {
+        const label = String(it.label || '');
+        const holding = label.match(/^((?:order|filler)-.+)-holding$/);
+        if (holding) { captions[holding[1]] = it; continue; }
+        const m = label.match(/^(order|filler)-(.+)$/);
+        if (m) wells.push({ frame: it, kind: m[1], assetId: m[2], frameLabel: label });
+      } catch (e) { /* skip an item we cannot read */ }
+    }
+  }
+  if (!wells.length) return { checked: 0, replaced: 0, unchanged: 0, failed: 0, details: [] };
+
+  let replaced = 0, unchanged = 0, failed = 0;
+  const details = [];
+  for (const w of wells) {
+    try {
+      const content = await fetchAssetContent(editionId, w.kind, w.assetId);
+      if (!content || !content.fileUrl) {
+        unchanged++;
+        details.push(`${w.frameLabel}: still no approved artwork`);
+        continue;
+      }
+      // Already holding a graphic? Then the build placed it and there is
+      // nothing to do. Re-placing would be harmless but slow, and would
+      // reset any crop the designer applied.
+      let hasGraphic = false;
+      try { hasGraphic = (w.frame.graphics && w.frame.graphics.length > 0); } catch (e) {}
+      if (hasGraphic) {
+        unchanged++;
+        details.push(`${w.frameLabel}: artwork already placed`);
+        continue;
+      }
+
+      const buf = await fetchBinary(content.fileUrl);
+      const ext = (String(content.fileUrl).split('?')[0].split('.').pop() || 'pdf').slice(0, 4);
+      const tempPath = await writeTemp(`${w.frameLabel}-refresh.${ext}`, buf);
+      try {
+        w.frame.frameFittingOptions.fittingOnEmptyFrame = id.EmptyFrameFittingOptions.CONTENT_TO_FRAME;
+      } catch (e) {}
+      w.frame.place(tempPath);
+      try { w.frame.fit(id.FitOptions.CONTENT_TO_FRAME); } catch (e) {
+        console.warn('[wvnews-print] refresh: fit failed for', w.frameLabel, e?.message || e);
+      }
+      // The grey holding fill and its caption are now wrong.
+      try { w.frame.fillColor = doc.swatches.item('None'); } catch (e) {}
+      try { w.frame.strokeWeight = 0; } catch (e) {}
+      const cap = captions[w.frameLabel];
+      if (cap) { try { cap.remove(); } catch (e) {} }
+      replaced++;
+      details.push(`${w.frameLabel}: artwork placed${content.advertiser ? ` — ${content.advertiser}` : ''}`);
+    } catch (e) {
+      failed++;
+      details.push(`${w.frameLabel}: FAILED — ${e?.message || e}`);
+      console.warn('[wvnews-print] refresh failed for', w.frameLabel, e?.message || e);
+    }
+  }
+  return { checked: wells.length, replaced, unchanged, failed, details };
+}
+
 // Page count of the active document (for Full-Color page gating).
 function activeDocPageCount() {
   try { return activeDocument().pages.length; } catch (e) { return 0; }
@@ -4917,5 +5008,6 @@ module.exports = {
   buildEditionPages,
   activeDocument, activePageLabel,
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
+  refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
 };
