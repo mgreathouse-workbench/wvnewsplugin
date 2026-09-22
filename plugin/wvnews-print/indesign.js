@@ -4447,7 +4447,8 @@ async function placeClassifiedSection(page, spread, items, styleMap, doc) {
 
         if (look.headlineBold) {
           // fontStyle is the reliable lever here: applying a character style
-          // would need one to exist in every publication's template.
+          // would need one to exist in every publication's template. Bold
+          // first, then whatever heavier weight the family actually has.
           try { range.fontStyle = 'Bold'; } catch (e) {
             try { range.fontStyle = 'Semibold'; } catch (e2) {
               console.warn('[wvnews-print] classified bold unavailable in this font');
@@ -4459,6 +4460,24 @@ async function placeClassifiedSection(page, spread, items, styleMap, doc) {
             const base = Number(range.pointSize) || Number(para.pointSize) || 0;
             if (base > 0) range.pointSize = Number((base * look.headlineScale).toFixed(2));
           } catch (e) { /* size is a nicety; the frame is the signal */ }
+        }
+        // The rest of the line — the body — goes semibold on an upgraded ad.
+        // This is what buys the bold add-on its visibility without touching
+        // the ads that did not pay for it: an ordinary classified keeps
+        // exactly the setting it has always had.
+        if (look.bodyEmphasis && range !== para) {
+          try {
+            const total = para.characters.length;
+            if (headline && total > headline.length) {
+              const body = para.characters.itemByRange(headline.length, total - 1);
+              try { body.fontStyle = 'Semibold'; } catch (e) {
+                // Many newsprint faces ship Regular/Bold and nothing between.
+                // Leaving the body alone is better than jumping it to Bold,
+                // which would flatten the headline's own emphasis.
+                console.warn('[wvnews-print] no Semibold in this font — classified body left as set');
+              }
+            }
+          } catch (e) { /* body emphasis is secondary to the headline */ }
         }
         if (look.frameWeightPt) {
           try {

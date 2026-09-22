@@ -11,7 +11,7 @@
 // module and regenerate — never edit this file directly, or the plugin will
 // disagree with the rest of the system.
 //
-// sourceSha256: 4942d17f1794efed
+// sourceSha256: fda616acff628152
 
 // What a classified's paid add-ons actually look like.
 //
@@ -27,9 +27,9 @@
 //
 // ── What each one means ──────────────────────────────────────────────
 //
-//   bold      the headline is set bold. Print and web.
-//   featured  a 3pt frame around the ad, and a bold, slightly larger
-//             headline. Print and web.
+//   bold      the headline is larger and extra bold, and the body is set
+//             semibold. Print and web.
+//   featured  everything bold does, plus a 3pt frame around the ad.
 //   photo     an image on the ad. WEB ONLY — a classified prints as a text
 //             line in a stacked column, and an image cannot be placed in one
 //             without geometry the print grid does not have for it.
@@ -40,9 +40,12 @@
 // is what somebody paying for "featured" is buying.
 const FEATURED_FRAME_PT = 3;
 
-// "Slightly bigger" — enough to notice beside a neighbour, not so much that a
-// featured ad restructures the column. 15% is about one step on a type scale.
-const FEATURED_HEADLINE_SCALE = 1.15;
+// "Slightly bigger" — enough to notice beside a neighbour, not so much that an
+// upgraded ad restructures the column. 15% is about one step on a type scale.
+const UPGRADED_HEADLINE_SCALE = 1.15;
+
+// Kept as the old name for anything still importing it.
+const FEATURED_HEADLINE_SCALE = UPGRADED_HEADLINE_SCALE;
 
 // Normalize the flags off a record, wherever they live. The submit portal,
 // the staff intake form and the print queue have all written these in
@@ -68,9 +71,16 @@ function addOnsOf(record) {
 // absolute size that would be wrong in one of them.
 function classifiedPresentation(record) {
   const a = addOnsOf(record);
+  // Featured is bold plus a frame — an ad that paid more should never look
+  // like less than one that paid less.
+  const upgraded = a.bold || a.featured;
   return {
-    headlineBold: a.bold || a.featured,   // featured implies bold
-    headlineScale: a.featured ? FEATURED_HEADLINE_SCALE : 1,
+    headlineBold: upgraded,
+    headlineScale: upgraded ? UPGRADED_HEADLINE_SCALE : 1,
+    // The body is set semibold on an upgraded ad. It is what buys the bold
+    // add-on its visibility WITHOUT touching the ads that did not pay: an
+    // ordinary classified keeps exactly the headline it has always had.
+    bodyEmphasis: upgraded,
     frameWeightPt: a.featured ? FEATURED_FRAME_PT : 0,
     showPhoto: !!a.photoUrl,              // web only; see the note above
     // Billed for a photo and none attached. Surfaced so the intake screen can
@@ -81,16 +91,16 @@ function classifiedPresentation(record) {
 
 // Tailwind classes for the web card, so the rules live here and not in JSX.
 //
-// The default headline weight steps DOWN to semibold. Every classified
-// headline used to be `font-bold`, which left nothing for the bold add-on to
-// do — a paid upgrade has to be visible beside an ad that did not buy it.
+// The UNPAID ad is left exactly as it was — `font-bold text-lg`, body plain.
+// A paid upgrade earns its visibility by going further, not by everyone else
+// being made plainer: an earlier cut of this stepped the default down to
+// semibold to create contrast, which quietly changed the appearance of every
+// listing nobody had paid for.
 function classifiedWebClasses(record) {
   const p = classifiedPresentation(record);
   return {
-    headline: [
-      p.headlineBold ? 'font-extrabold' : 'font-semibold',
-      p.headlineScale > 1 ? 'text-xl' : 'text-lg',
-    ].join(' '),
+    headline: p.headlineBold ? 'font-extrabold text-xl' : 'font-bold text-lg',
+    body: p.bodyEmphasis ? 'font-semibold' : '',
     card: p.frameWeightPt
       ? 'border-[3px] border-ink-900'
       : 'border border-ink-200',
@@ -99,6 +109,7 @@ function classifiedWebClasses(record) {
 
 module.exports = {
   FEATURED_FRAME_PT,
+  UPGRADED_HEADLINE_SCALE,
   FEATURED_HEADLINE_SCALE,
   addOnsOf,
   classifiedPresentation,
