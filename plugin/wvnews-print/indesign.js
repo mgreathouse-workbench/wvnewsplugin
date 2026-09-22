@@ -2667,7 +2667,7 @@ function masterNameForFolio(folio, snippet) {
   return parseInt(m[1], 10) === 1 ? OPENER_MASTER_NAME : INSIDE_MASTER_NAME;
 }
 
-function applyMasterByFolio(doc, folio, snippet) {
+function applyMasterByFolio(doc, folio, snippet, diag) {
   const wanted = masterNameForFolio(folio, snippet);
   // Strip the leading "<prefix>-" from the target so we can match by
   // baseName too — InDesign's master spread name is `<prefix>-<baseName>`
@@ -2700,7 +2700,14 @@ function applyMasterByFolio(doc, folio, snippet) {
       }
     }
     if (!chosen) {
-      console.warn(`[wvnews-print] master "${wanted}" not found in template. Available masters: ${names.join(' | ')}`);
+      // The available names go in the REPORT, not just the console. Which
+      // masters a template actually contains is the one fact that decides
+      // whether this is a naming mismatch or a missing master, and it cannot
+      // be guessed from the outside.
+      const msg = `MASTER NOT APPLIED — wanted "${wanted}" for ${folio}. `
+        + `Template has: ${names.length ? names.join(' | ') : '(no masters at all)'}`;
+      if (diag) diag.push(msg);
+      console.warn(`[wvnews-print] ${msg}`);
       return false;
     }
     const page = doc.pages.item(0);
@@ -2710,7 +2717,9 @@ function applyMasterByFolio(doc, folio, snippet) {
     let finalName = '';
     try { finalName = (page.appliedMaster && page.appliedMaster.name) || '(none)'; } catch { finalName = '(unknown)'; }
     console.log(`[wvnews-print] folio ${folio}: master ${priorName} → ${finalName} (wanted ${wanted})`);
-    return true;
+    // The NAME, not just success: "master: A-Inside" in the build report says
+    // which furniture the page actually got, where `true` says nothing.
+    return finalName || true;
   } catch (e) {
     console.warn('[wvnews-print] applyMaster failed:', e?.message || e);
     return false;
@@ -2993,6 +3002,72 @@ async function placeSnippetIntoActiveDoc(doc, tempPath, snippet) {
     () => doc.place(tempPath, false),
   ];
 
+  // Collect the items this place actually created, by id-diff against the
+  // baseline snapshot taken before it ran.
+  const newItems = () => {
+    const out = [];
+    for (const container of [page, spread]) {
+      if (!container) continue;
+      try {
+        const items = container.allPageItems;
+        const len = (items && typeof items.length === 'number') ? items.length : 0;
+        for (let i = 0; i < len; i++) {
+          try { if (!baselineIds.has(items[i].id)) out.push(items[i]); } catch {}
+        }
+      } catch {}
+    }
+    return out;
+  };
+
+  // A snippet authored on a LEFT-HAND page lands a page width off.
+  //
+  // We place in "original location" mode, so the coordinates encoded in the
+  // .idms win — which is what makes a designer's layout come back exactly as
+  // drawn. But a snippet cut from the verso of a facing-pages spread carries
+  // NEGATIVE x relative to the spread origin. Dropped into the single-page
+  // document each folio is built as, it lands one full page width to the left
+  // of the paper.
+  //
+  // The correction is deliberately narrow: only an offset within a point of a
+  // whole page width is treated as this bug and moved back. Anything else is
+  // a designer's intentional bleed or a genuinely misplaced snippet, and
+  // silently dragging that onto the page would hide a real problem.
+  const recentreIfPageWidthOff = () => {
+    const items = newItems();
+    if (!items.length) return;
+    const b = page.bounds;                          // [y1, x1, y2, x2]
+    const pageW = b[3] - b[1];
+    let minX = Infinity;
+    for (const it of items) {
+      try { const g = it.geometricBounds; if (g && g[1] < minX) minX = g[1]; } catch {}
+    }
+    if (!Number.isFinite(minX)) return;
+
+    // Move by EXACTLY one page width, not to the page's left edge.
+    //
+    // Snapping the leftmost item flush to the edge throws away the snippet's
+    // own inset — a layout drawn with a 0.25" gutter came back sitting hard
+    // against the trim. The verso offset is a whole page width by
+    // construction, so translating by exactly that width puts every item back
+    // where the designer drew it, gutter included.
+    const offBy = b[1] - minX;                       // > 0: items sit left of the page
+    if (!(offBy > pageW * 0.5 && offBy < pageW * 1.5)) return;
+    const dx = pageW;
+    let moved = 0;
+    for (const it of items) {
+      try { it.move(undefined, [dx, 0]); moved++; } catch (e) {
+        try {
+          const g = it.geometricBounds;
+          it.geometricBounds = [g[0], g[1] + dx, g[2], g[3] + dx];
+          moved++;
+        } catch {}
+      }
+    }
+    console.warn(`[wvnews-print] snippet was authored on a left-hand page — moved `
+      + `${moved}/${items.length} item(s) right by one page width (${(dx / 72).toFixed(3)}"); `
+      + `leftmost item now ${((minX + dx - b[1]) / 72).toFixed(3)}" inside the page edge`);
+  };
+
   let landed = false;
   let lastErr;
   try {
@@ -3001,6 +3076,9 @@ async function placeSnippetIntoActiveDoc(doc, tempPath, snippet) {
         attempts[i]();
         if (await pollLanded(1500)) {
           console.log(`[wvnews-print] placed snippet via attempt ${i + 1}`);
+          try { recentreIfPageWidthOff(); } catch (e) {
+            console.warn('[wvnews-print] snippet re-centre check failed:', e?.message || e);
+          }
           landed = true;
           break;
         }
@@ -3822,42 +3900,83 @@ async function placeOrderAsset(page, spread, asset) {
 // it starts at the page edge. Only when the page is neither do we fall back
 // to the template's margins, and say so.
 function liveAreaOrigin(pageObj, format) {
-  const b = pageObj.bounds;                       // [y1, x1, y2, x2]
+  const b = pageObj.bounds;                       // [y1, x1, y2, x2], POINTS
   const f = (typeof PAGE_FORMATS !== 'undefined' && PAGE_FORMATS[format]) || null;
-  const pageHIn = (b[2] - b[0]) / 72;
-  const pageWIn = (b[3] - b[1]) / 72;
-
   const mp = pageObj.marginPreferences;
-  const mTop = typeof mp.top === 'number' ? mp.top : 36;
-  const mLeft = typeof mp.left === 'number' ? mp.left : 36;
+  const n = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+  const mTop = n(mp && mp.top), mLeft = n(mp && mp.left);
+  const mBottom = n(mp && mp.bottom), mRight = n(mp && mp.right);
 
-  if (!f) return { top: b[0] + mTop, left: b[1] + mLeft, how: 'margins (no grid for format)' };
+  const pageTop = b[0], pageLeft = b[1];
+  const pageH = b[2] - b[0], pageW = b[3] - b[1];
 
-  // Vertical.
-  let top, howTop;
-  if (Math.abs(pageHIn - f.pageDepthIn) < 0.05) {
-    top = b[0];
-    howTop = 'page is the live area';
-  } else if (f.sheetDepthIn && Math.abs(pageHIn - f.sheetDepthIn) < 0.2) {
-    top = b[0] + (f.folioBarIn || 0) * 72;
-    howTop = `full sheet, below the ${f.folioBarIn}" folio bar`;
-  } else {
-    top = b[0] + mTop;
-    howTop = `margins (page ${pageHIn.toFixed(3)}" matches neither live ${f.pageDepthIn}" nor sheet ${f.sheetDepthIn || '?'}")`;
+  if (!f) return { top: pageTop + mTop, left: pageLeft + mLeft, how: 'margins (no grid for format)' };
+
+  // Two candidate rectangles, best first.
+  //
+  // The MARGIN BOX comes first because a press template is normally drawn
+  // with bleed or slug outside the trim and its margins set to the trim. A
+  // real WV News broadsheet template is an 11 x 21.4in page with 0.25in
+  // margins — so the margin box is 10.5 x 20.9in, which IS the trimmed sheet,
+  // while the page box is half an inch bigger in both directions. Measuring
+  // the page box there puts every ad a quarter inch high and a quarter inch
+  // left.
+  //
+  // The PAGE BOX is the fallback, for a template with no margins set, where
+  // the two boxes are the same rectangle anyway.
+  const boxes = [
+    { name: 'margin box', top: pageTop + mTop, left: pageLeft + mLeft,
+      h: pageH - mTop - mBottom, w: pageW - mLeft - mRight },
+    { name: 'page box', top: pageTop, left: pageLeft, h: pageH, w: pageW },
+  ];
+
+  const folioIn = f.folioBarIn || 0;
+
+  // Vertical: does this box hold the live area, and is the furniture above it?
+  let top = null, howTop = '';
+  for (const box of boxes) {
+    if (!(box.h > 0)) continue;
+    const hIn = box.h / 72;
+    const extraIn = hIn - f.pageDepthIn;
+    if (Math.abs(extraIn) < 0.05) {
+      top = box.top;
+      howTop = `${box.name} (${hIn.toFixed(3)}in) IS the live area`;
+      break;
+    }
+    if (folioIn > 0 && extraIn >= folioIn - 0.05) {
+      top = box.top + folioIn * 72;
+      howTop = `${box.name} is ${hIn.toFixed(3)}in, ${extraIn.toFixed(3)}in over the live area`
+        + ` — live starts ${folioIn}in below its top edge`;
+      break;
+    }
+  }
+  if (top == null) {
+    top = pageTop + mTop;
+    howTop = `margins — neither the margin box (${(boxes[0].h / 72).toFixed(3)}in) nor the page`
+      + ` (${(pageH / 72).toFixed(3)}in) can be reconciled with a ${f.pageDepthIn}in live area`;
   }
 
-  // Horizontal. No side furniture is documented, so a page that is already
-  // the live width starts at its own edge; anything wider is centred on it.
-  let left, howLeft;
-  if (Math.abs(pageWIn - f.pageWidthIn) < 0.05) {
-    left = b[1];
-    howLeft = 'page is the live width';
-  } else if (pageWIn > f.pageWidthIn) {
-    left = b[1] + ((pageWIn - f.pageWidthIn) / 2) * 72;
-    howLeft = 'centred on the sheet';
-  } else {
-    left = b[1] + mLeft;
-    howLeft = 'margins';
+  // Horizontal: no side furniture is documented, so a box that is already the
+  // live width starts at its own left edge; a wider one is centred on it.
+  let left = null, howLeft = '';
+  for (const box of boxes) {
+    if (!(box.w > 0)) continue;
+    const wIn = box.w / 72;
+    if (Math.abs(wIn - f.pageWidthIn) < 0.05) {
+      left = box.left;
+      howLeft = `${box.name} (${wIn.toFixed(3)}in) IS the live width`;
+      break;
+    }
+  }
+  if (left == null) {
+    const wIn = pageW / 72;
+    if (wIn > f.pageWidthIn) {
+      left = pageLeft + ((wIn - f.pageWidthIn) / 2) * 72;
+      howLeft = `centred on a ${wIn.toFixed(3)}in page`;
+    } else {
+      left = pageLeft + mLeft;
+      howLeft = 'margins';
+    }
   }
 
   return { top, left, how: `${howTop}; ${howLeft}` };
@@ -3952,26 +4071,62 @@ function slotIdentity(slot) {
 //
 // `content` per slot (advertiser, fileUrl) is fetched by the caller, because
 // the plan is pure geometry — it deliberately knows nothing about artwork.
-async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId) {
+async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, diag) {
   const id = host();
+  // Geometry facts go into `diag` as well as the console. Reading them should
+  // not depend on getting UXP Developer Tool's per-row Debug window open —
+  // the panel shows them after a build, where they cannot be missed.
+  const say = (line) => { console.log(`[wvnews-print] ${line}`); if (diag) diag.push(line); };
   const slots = Array.isArray(planPage && planPage.slots) ? planPage.slots : [];
-  if (!slots.length) return { placed: 0, missed: 0 };
 
   const format = planPage.format;
-  // Once per page, not per ad: the answer is a property of the page, and
-  // logging it once gives a single line to read when an ad lands wrong.
-  const origin = liveAreaOrigin(pageObj, format);
-  console.log(`[wvnews-print] live area on ${planPage.folio || '?'}: ${origin.how}`);
+  // Units FIRST, before anything reads pageObj.bounds.
+  //
+  // InDesign returns geometry in the document's current ruler units. This
+  // document had them set to inches, so bounds came back as inches while
+  // every calculation here assumes points — a 21.4in page measured as 0.297,
+  // which matches no known sheet, so the rule fell through to margins and
+  // returned 0.25 INCHES where the caller then used it as 0.25 POINTS. The
+  // live area started 0.0035in down instead of 0.3289in, and every ad on the
+  // page sat a folio bar high.
+  let placed = 0, missed = 0;
   const vp = doc.viewPreferences;
   const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
   vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
   vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
-  let placed = 0, missed = 0;
   try {
+  if (!slots.length) {
+    // Still report the page we measured. A silent return here is what made
+    // "the ads are too high" indistinguishable from "this code never ran".
+    const o = liveAreaOrigin(pageObj, format);
+    const b0 = pageObj.bounds;
+    say(`page ${((b0[3] - b0[1]) / 72).toFixed(3)}x${((b0[2] - b0[0]) / 72).toFixed(3)}in`
+      + `, live area starts ${((o.top - b0[0]) / 72).toFixed(4)}in down — ${o.how}`);
+    return { placed: 0, missed: 0 };
+  }
+  // Once per page, not per ad: the answer is a property of the page, and
+  // logging it once gives a single line to read when an ad lands wrong.
+  const origin = liveAreaOrigin(pageObj, format);
+  // The measured page, every time — not only when the rule falls through.
+  // Without the actual numbers, "the ads are still too high" cannot be told
+  // apart from "the plugin was never reloaded".
+  const pb = pageObj.bounds;
+  say(`page ${((pb[3] - pb[1]) / 72).toFixed(3)}x${((pb[2] - pb[0]) / 72).toFixed(3)}in`
+    + `, live area starts ${((origin.top - pb[0]) / 72).toFixed(4)}in down / `
+    + `${((origin.left - pb[1]) / 72).toFixed(4)}in in — ${origin.how}`);
     for (const slot of slots) {
       const { id: orderId, frameLabel } = slotIdentity(slot);
       try {
         const bounds = adSlotBounds(pageObj, format, slot, origin);
+        if (placed === 0) {
+          // The first well on the page, in inches from the page's top edge.
+          // Page size + live-area rule + this line together pin down exactly
+          // where an ad went and why, with no guessing from a screenshot.
+          say(`first ad: top ${((bounds[0] - pb[0]) / 72).toFixed(4)}in, `
+            + `bottom ${((bounds[2] - pb[0]) / 72).toFixed(4)}in from page top`
+            + ` (grid asked for topOffsetIn=${slot.topOffsetIn}, depthIn=${slot.depthIn});`
+            + ` ${(((pb[2] - pb[0]) - bounds[2]) / 72).toFixed(4)}in left below it`);
+        }
         const rect = pageObj.rectangles.add({ geometricBounds: bounds });
         try { rect.label = frameLabel; } catch (e) {}
         try { rect.strokeWeight = 0; } catch (e) {}
@@ -4092,6 +4247,97 @@ function placedAdOrderIdsOnActivePage() {
     }
   } catch (e) {}
   return out;
+}
+
+// ── Refresh the ads already on this page ─────────────────────────────
+//
+// An ad's artwork is placed ONCE, while Build Pages runs. A proof approved
+// afterwards changes nothing about the page already built: it still holds the
+// grey holding box. Rebuilding the whole page would fix it and throw away
+// every manual change the designer has made since, which is too high a price
+// for one late approval.
+//
+// This re-places only the wells whose artwork has arrived, in the document
+// that is open, and leaves everything else exactly as it is.
+//
+// It works off the frame LABELS the build wrote — `order-<id>` and
+// `filler-<id>` — so it operates on the artist's real page rather than on a
+// plan, and a frame they moved or resized keeps its new geometry. The frame
+// is still the sold size as far as this is concerned; only its contents
+// change.
+async function refreshPlacedAdsOnActivePage(editionId) {
+  const id = host();
+  const doc = activeDocument();
+  if (!doc) throw new Error('No document is open.');
+  if (!editionId) throw new Error('No edition selected.');
+
+  const win = doc.layoutWindows.length ? doc.layoutWindows[0] : null;
+  const pageObj = win ? win.activePage : doc.pages.item(0);
+
+  // Every labelled ad well on this page, with its holding caption if it has
+  // one. The caption is a separate frame the build labelled
+  // `<frameLabel>-holding`, and it must go when real artwork lands or the
+  // order number prints over the ad.
+  const wells = [];
+  const captions = {};
+  for (const c of [pageObj, pageObj.parent]) {
+    for (const it of (c.allPageItems || [])) {
+      try {
+        const label = String(it.label || '');
+        const holding = label.match(/^((?:order|filler)-.+)-holding$/);
+        if (holding) { captions[holding[1]] = it; continue; }
+        const m = label.match(/^(order|filler)-(.+)$/);
+        if (m) wells.push({ frame: it, kind: m[1], assetId: m[2], frameLabel: label });
+      } catch (e) { /* skip an item we cannot read */ }
+    }
+  }
+  if (!wells.length) return { checked: 0, replaced: 0, unchanged: 0, failed: 0, details: [] };
+
+  let replaced = 0, unchanged = 0, failed = 0;
+  const details = [];
+  for (const w of wells) {
+    try {
+      const content = await fetchAssetContent(editionId, w.kind, w.assetId);
+      if (!content || !content.fileUrl) {
+        unchanged++;
+        details.push(`${w.frameLabel}: still no approved artwork`);
+        continue;
+      }
+      // Already holding a graphic? Then the build placed it and there is
+      // nothing to do. Re-placing would be harmless but slow, and would
+      // reset any crop the designer applied.
+      let hasGraphic = false;
+      try { hasGraphic = (w.frame.graphics && w.frame.graphics.length > 0); } catch (e) {}
+      if (hasGraphic) {
+        unchanged++;
+        details.push(`${w.frameLabel}: artwork already placed`);
+        continue;
+      }
+
+      const buf = await fetchBinary(content.fileUrl);
+      const ext = (String(content.fileUrl).split('?')[0].split('.').pop() || 'pdf').slice(0, 4);
+      const tempPath = await writeTemp(`${w.frameLabel}-refresh.${ext}`, buf);
+      try {
+        w.frame.frameFittingOptions.fittingOnEmptyFrame = id.EmptyFrameFittingOptions.CONTENT_TO_FRAME;
+      } catch (e) {}
+      w.frame.place(tempPath);
+      try { w.frame.fit(id.FitOptions.CONTENT_TO_FRAME); } catch (e) {
+        console.warn('[wvnews-print] refresh: fit failed for', w.frameLabel, e?.message || e);
+      }
+      // The grey holding fill and its caption are now wrong.
+      try { w.frame.fillColor = doc.swatches.item('None'); } catch (e) {}
+      try { w.frame.strokeWeight = 0; } catch (e) {}
+      const cap = captions[w.frameLabel];
+      if (cap) { try { cap.remove(); } catch (e) {} }
+      replaced++;
+      details.push(`${w.frameLabel}: artwork placed${content.advertiser ? ` — ${content.advertiser}` : ''}`);
+    } catch (e) {
+      failed++;
+      details.push(`${w.frameLabel}: FAILED — ${e?.message || e}`);
+      console.warn('[wvnews-print] refresh failed for', w.frameLabel, e?.message || e);
+    }
+  }
+  return { checked: wells.length, replaced, unchanged, failed, details };
 }
 
 // Page count of the active document (for Full-Color page gating).
@@ -4333,11 +4579,38 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, pl
       adContent[id] = null;
     }
   }
-  if (plannedSlots.length) {
-    const adStats = await placeAdSlotsForPage(doc, pageObj, planPage, adContent);
+  const diag = (jumpCtx && jumpCtx.diag) || null;
+  const say = (line) => { console.log(`[wvnews-print] ${line}`); if (diag) diag.push(line); };
+
+  // Called unconditionally: with no slots it reports the page it measured and
+  // returns. Guarding the call is what left a page silent, which made "the ads
+  // are too high" indistinguishable from "this code never ran".
+  if (planPage) {
+    const adStats = await placeAdSlotsForPage(doc, pageObj, planPage, adContent, diag);
     placed += adStats.placed;
     missed += adStats.missed;
     if (adStats.placed) console.log(`[wvnews-print] built ${adStats.placed} ad well(s) from the plan on ${page.folio}`);
+  } else {
+    say('NO PAGE PLAN for this folio — the platform returned no plan entry, so every '
+      + 'ad here falls back to the template frame and ignores the grid geometry.');
+  }
+  if (planPage && !plannedSlots.length) {
+    // No slots means the artist never POSITIONED these ads on the web grid.
+    // They are assigned to the folio, so they still get placed — but by the
+    // old path, into the template snippet's single generic `ad` frame, at
+    // whatever position the template puts it. None of the grid geometry
+    // applies to them, which is why an ad can sit in the wrong place no
+    // matter what the live-area rule computes. Say so plainly: it is a
+    // layout problem, not a plugin one, and the fix is to drag the ads onto
+    // the grid.
+    const orderAssets = list.filter(a => a.kind === 'order' || a.kind === 'filler').length;
+    if (orderAssets) {
+      say(`NO AD WELLS BUILT — the plan has 0 positioned ads for this page, so `
+        + `${orderAssets} ad(s) fall back to the template's generic 'ad' frame and ignore the `
+        + `grid geometry. Position them on the Page Grid to place them by their real size.`);
+    } else {
+      say('no ads on this page');
+    }
   }
 
   for (const a of list) {
@@ -4446,6 +4719,11 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
   for (const i of order) {
     const pg = pages[i];
     const pgIsJump = isJumpPage(pg);
+    // Geometry notes for THIS page, surfaced in the panel's build summary.
+    // The panel is the only place a layout artist reliably looks; UXP
+    // Developer Tool's per-row Debug window is easy to miss and easy to
+    // confuse with its unrelated "Debug Script" button.
+    const diag = [];
     let doc = null;
     try {
       // Acquire the page lock on the website before building, so the
@@ -4470,7 +4748,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
 
       // Apply the right master to page 1. Snippet pageRole wins if set;
       // otherwise fall back to position (A1/B1/C1 = opener, else inside).
-      applyMasterByFolio(doc, pg.folio, snip);
+      const masterApplied = applyMasterByFolio(doc, pg.folio, snip, diag);
 
       // Place the assigned snippet, if any.
       let placed = false;
@@ -4480,8 +4758,24 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         const tempPath = await writeTemp(`${pg.snippetId}.idms`, buf);
         notify(pg.folio, i, 'place');
         placed = await placeSnippetIntoActiveDoc(doc, tempPath, snip);
-        if (!placed) console.warn('[wvnews-print] build: snippet did not land for', pg.folio);
+        if (!placed) {
+          diag.push(`SNIPPET FAILED TO LAND — "${snip && snip.name ? snip.name : pg.snippetId}" `
+            + `downloaded but nothing appeared on the page.`);
+          console.warn('[wvnews-print] build: snippet did not land for', pg.folio);
+        }
+      } else {
+        // NOT the same as a snippet that failed. A new edition's pages are
+        // created with snippetId: null and the wizard fills them in one page
+        // at a time, so an unassigned folio is the ordinary state of a page
+        // nobody has set up yet — and the page builds with masters only, no
+        // editorial wells. Reported by name so it is not read as a fault in
+        // the plugin.
+        diag.push('NO SNIPPET ASSIGNED to this folio — page built from masters only, '
+          + 'so it has no editorial frames. Assign one in the edition editor.');
       }
+      // On failure applyMasterByFolio has already pushed the specific reason,
+      // including what the template actually contains.
+      if (masterApplied) diag.push(`master: ${masterApplied}`);
 
       // Place any content assets (stories/ads/classifieds) the editor
       // assigned to this folio. Each asset's payload is fetched on
@@ -4491,7 +4785,7 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         notify(pg.folio, i, 'assets');
         // Don't queue jumps off the jump page itself; only source pages
         // capture overflow (and only when a jump landing exists).
-        const jumpCtx = (jumpFolio && !pgIsJump) ? { jumpQueue, jumpFolio } : {};
+        const jumpCtx = (jumpFolio && !pgIsJump) ? { jumpQueue, jumpFolio, diag } : { diag };
         assetStats = await placeAssetsForPage(edition, pg, doc, styleMap, jumpCtx, planByFolio[pg.folio] || null);
         if (assetStats.placed) console.log(`[wvnews-print] placed ${assetStats.placed} asset(s) on ${pg.folio}, ${assetStats.missed} missed`);
       }
@@ -4559,14 +4853,14 @@ async function buildEditionPages(edition, snippetsById, onProgress) {
         console.warn('[wvnews-print] build: all close forms threw; doc + .idlk lock may linger for', pg.folio);
       }
       doc = null;
-      results.push({ folio: pg.folio, placed, saved: true, version, path, closed: closeOk, assets: assetStats });
+      results.push({ folio: pg.folio, placed, saved: true, version, path, closed: closeOk, assets: assetStats, diag });
       console.log('[wvnews-print] build: checked in', pg.folio, '->', path, closeOk ? '' : '(close failed)');
     } catch (e) {
       const msg = e?.message || String(e);
       console.error('[wvnews-print] build: failed for', pg.folio, msg);
       // Try not to leave a half-built doc open.
       if (doc) { try { doc.close(id.SaveOptions.NO); } catch {} }
-      results.push({ folio: pg.folio, placed: false, saved: false, error: msg });
+      results.push({ folio: pg.folio, placed: false, saved: false, error: msg, diag });
     }
   }
 
@@ -4714,5 +5008,6 @@ module.exports = {
   buildEditionPages,
   activeDocument, activePageLabel,
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
+  refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
 };
