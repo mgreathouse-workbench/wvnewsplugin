@@ -21,7 +21,7 @@ const {
 // platform's grid.
 const { columnWidthIn, columnOffsetIn, PAGE_FORMATS } = require('./page-geometry.js');
 const { classifiedPresentation } = require('./classified-presentation.js');
-const { LINER_TYPE } = require('./liner-type-spec.js');
+const { LINER_TYPE, LINER_PHOTO_ASPECT } = require('./liner-type-spec.js');
 
 // The grid the plugin lays out on. Everything below was previously hardcoded
 // to the Exponent Telegram broadsheet; this names that assumption so it can
@@ -348,6 +348,11 @@ function buildClassifiedBlocks(items, resolveHeaderSlug) {
   const blocks = [];
   const headerIdx = [];
   const headerAnchors = [];
+  // Listings that paid for a photo. Recorded by paragraph index, the same way
+  // headerAnchors and buildObitBlocks' photoAnchors are: an inline object's
+  // insertion point does not exist until the paragraph does, so the photo is
+  // placed after the text has flowed.
+  const photoAnchors = []; // { paraIdx, url }
   const paraCat = [];
   const byCat = new Map();
   for (const it of items) {
@@ -387,10 +392,21 @@ function buildClassifiedBlocks(items, resolveHeaderSlug) {
       // Hard return between listings within a category.
       if (!firstInCat) push({ align: 'left', runs: [{ text: '' }] }, cat);
       firstInCat = false;
+      // A paid photo sits ABOVE its listing in its own centered paragraph —
+      // the same arrangement as an obituary portrait.
+      //
+      // The feed sends a url ONLY for a listing billed for a photo with a
+      // file attached, so the presence of one here is the decision already
+      // made; the plugin does not re-litigate it.
+      const photoUrl = String(it.photoUrl || '').trim();
+      if (photoUrl) {
+        photoAnchors.push({ paraIdx: blocks.length, url: photoUrl });
+        push({ align: 'center', runs: [{ text: '' }] }, cat);
+      }
       push({ align: 'left', runs }, cat);
     }
   }
-  return { blocks, headerIdx, headerAnchors, paraCat };
+  return { blocks, headerIdx, headerAnchors, photoAnchors, paraCat };
 }
 
 // Size an inline header graphic's anchored frame to the column width,
@@ -687,7 +703,13 @@ function buildObitBlocks(items) {
 // `anchor.paraIdx`, sized to a column-wide portrait box. Non-fatal: on any
 // failure the obit still places as text. Call anchors in REVERSE paragraph
 // order so earlier insertion points stay valid as inline objects shift text.
-async function placeObitPhoto(id, doc, frame, anchor) {
+// Anchor a column-wide portrait into a liner's block.
+//
+// Obituaries and classifieds share this: one aspect (LINER_PHOTO_ASPECT from
+// the generated spec), one code path. The platform predicts the section's
+// depth from that same constant, so two placement paths would mean two
+// numbers and a section that does not fit.
+async function placeLinerPhoto(id, doc, frame, anchor) {
   try {
     const story = frame.parentStory;
     const para = story.paragraphs.item(anchor.paraIdx);
@@ -695,13 +717,13 @@ async function placeObitPhoto(id, doc, frame, anchor) {
     const ip = para.insertionPoints.item(0);
     const buf = await fetchBinary(anchor.url);
     const ext = (anchor.url.split('?')[0].split('.').pop() || 'jpg').slice(0, 4);
-    const tempPath = await writeTemp(`obit-${anchor.paraIdx}.${ext}`, buf);
+    const tempPath = await writeTemp(`liner-photo-${anchor.paraIdx}.${ext}`, buf);
     // Pre-size the inline frame, THEN place — same reliable pattern as the
     // classified headers (placing at native size + resizing oversets narrow
     // columns). A hair under the column width so it fits the line. Force
     // POINTS: geometricBounds read in the doc's ruler units (inches → giant).
     const wPt = CONTENT_BLOCK.widthIn * 72 - 1;
-    const hPt = wPt * OBIT_PHOTO_ASPECT;
+    const hPt = wPt * LINER_PHOTO_ASPECT;
     const vp = doc.viewPreferences;
     const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
     vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
@@ -719,9 +741,14 @@ async function placeObitPhoto(id, doc, frame, anchor) {
       vp.verticalMeasurementUnits = sV;
     }
   } catch (e) {
-    console.warn('[wvnews-print] obit photo placement failed:', e?.message || e);
+    // A photo that will not place must not take the block down with it: the
+    // listing's text is what the customer is owed first.
+    console.warn('[wvnews-print] liner photo placement failed:', e?.message || e);
   }
 }
+
+// Kept under the old name — the obits path calls it.
+const placeObitPhoto = placeLinerPhoto;
 
 // Place a marketplace block (classifieds / legals / obits) into the
 // SELECTED text frame. Classifieds get one text header per category;
@@ -746,9 +773,14 @@ const CONTENT_BLOCK = {
   leading: LINER_TYPE.leading,
 };
 
-// Obit portrait: a column-wide, portrait-ratio box the memorial photo is
-// anchored into at the top of each obit. FILL_PROPORTIONALLY fills + crops.
-const OBIT_PHOTO_ASPECT = 1.2; // height = width * 1.2 (portrait)
+// A liner portrait: a column-wide, portrait-ratio box the photo is anchored
+// into at the top of each obituary — and, as of 2026-10-12, each classified
+// that paid for one. FILL_PROPORTIONALLY fills + crops.
+//
+// The ratio comes from the generated liner-type-spec.js rather than a second
+// copy here, because the platform predicts the section's depth from it: a
+// photo is 1.98in on a broadsheet against 0.83in of text for a typical
+// listing, so a disagreement about this number is a section that will not fit.
 
 // Content starts this far below the top of the page, leaving room for the
 // folio (running header / page line).
@@ -1003,7 +1035,7 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
               const slug = categoryHeaderSlug(cat);
               return (slug && headerUrls[slug]) ? slug : null;
             };
-            const { blocks, headerIdx, headerAnchors, paraCat } = buildClassifiedBlocks(items, resolveHeaderSlug);
+            const { blocks, headerIdx, headerAnchors, photoAnchors, paraCat } = buildClassifiedBlocks(items, resolveHeaderSlug);
             if (!blocks.length) throw new Error('Nothing to place.');
             applyRichTextToFrame(id, frame, blocks, fmt);
             // Style the remaining TEXT category headers (categories with no art).
@@ -1026,6 +1058,17 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
             for (let a = headerAnchors.length - 1; a >= 0; a--) {
               const { paraIdx, slug } = headerAnchors[a];
               await placeClassifiedHeader(id, doc, frame, paraIdx, headerUrls[slug], slug, hdrWidthPt);
+            }
+            // Paid listing photos, after the banners and in the same reverse
+            // order and for the same reason: anchoring an inline object
+            // reflows the text below it, so placing bottom-up keeps every
+            // remaining paragraph index valid.
+            //
+            // The feed sends a url only for a listing billed for a photo with
+            // a file attached, so the presence of an anchor IS the decision —
+            // see the marketplace route's classifieds branch.
+            for (let a = photoAnchors.length - 1; a >= 0; a--) {
+              await placeLinerPhoto(id, doc, frame, photoAnchors[a]);
             }
             // Record stable category boundaries so "Update Section Headers"
             // can re-sync column banners after the artist reshapes columns.

@@ -11,7 +11,7 @@
 // module and regenerate — never edit this file directly, or the plugin will
 // disagree with the rest of the system.
 //
-// sourceSha256: fda616acff628152
+// sourceSha256: 0b75d4bb564030b4
 
 // What a classified's paid add-ons actually look like.
 //
@@ -30,9 +30,16 @@
 //   bold      the headline is larger and extra bold, and the body is set
 //             semibold. Print and web.
 //   featured  everything bold does, plus a 3pt frame around the ad.
-//   photo     an image on the ad. WEB ONLY — a classified prints as a text
-//             line in a stacked column, and an image cannot be placed in one
-//             without geometry the print grid does not have for it.
+//   photo     an image on the ad. Web AND print, as of 2026-10-12.
+//
+//             It was web-only before, and the reason recorded here was that
+//             "an image cannot be placed in [a stacked column] without
+//             geometry the print grid does not have for it". That was wrong:
+//             the plugin already anchored obituary portraits and this very
+//             module's category banners into stacked columns by the same
+//             inline-frame mechanism. The geometry existed; the classified
+//             path had never been wired to it. It is now — column-wide,
+//             portrait, LINER_PHOTO_ASPECT in liner-type-spec.js.
 
 // A frame heavy enough to read as deliberate at classified sizes. Points in
 // print, and the same number of CSS pixels on screen: at typical classified
@@ -82,7 +89,7 @@ function classifiedPresentation(record) {
     // ordinary classified keeps exactly the headline it has always had.
     bodyEmphasis: upgraded,
     frameWeightPt: a.featured ? FEATURED_FRAME_PT : 0,
-    showPhoto: !!a.photoUrl,              // web only; see the note above
+    showPhoto: !!a.photoUrl,              // web and print; see the note above
     // Billed for a photo and none attached. Surfaced so the intake screen can
     // say so — the money has been taken either way.
     photoPaidButMissing: a.withPhoto && !a.photoUrl,
