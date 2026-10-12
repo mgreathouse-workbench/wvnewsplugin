@@ -21,6 +21,7 @@ const {
 // platform's grid.
 const { columnWidthIn, columnOffsetIn, PAGE_FORMATS } = require('./page-geometry.js');
 const { classifiedPresentation } = require('./classified-presentation.js');
+const { LINER_TYPE } = require('./liner-type-spec.js');
 
 // The grid the plugin lays out on. Everything below was previously hardcoded
 // to the Exponent Telegram broadsheet; this names that assumption so it can
@@ -729,9 +730,21 @@ async function placeObitPhoto(id, doc, frame, anchor) {
 // (legals / classifieds / obits). The plugin creates the block frame itself
 // so content arrives WITH its block rather than needing a pre-drawn frame.
 //   width   one newspaper column on PAGE_FORMAT's grid (1.6458 in broadsheet)
-//   font    Helvetica Neue 8pt / 8.5pt leading
+//   font    LINER_TYPE — Helvetica Neue 8pt / 8.5pt leading
 //   align   left-justified (justify, last line flush left)
-const CONTENT_BLOCK = { widthIn: columnWidthIn(PAGE_FORMAT, 1), font: 'Helvetica Neue', pointSize: 8, leading: 8.5 };
+//
+// The type comes from the generated liner-type-spec.js rather than being
+// written here, because the platform now has to predict how much paper a
+// liner section needs BEFORE it is laid out — the Classifieds/Legals space
+// ticker in the Page Grid. An estimate computed from different numbers than
+// the ones applied below is a wrong page count, so there is one copy and the
+// platform owns it (wvnews-platform/src/lib/liner-type-spec.js).
+const CONTENT_BLOCK = {
+  widthIn: columnWidthIn(PAGE_FORMAT, 1),
+  font: LINER_TYPE.font,
+  pointSize: LINER_TYPE.pointSize,
+  leading: LINER_TYPE.leading,
+};
 
 // Obit portrait: a column-wide, portrait-ratio box the memorial photo is
 // anchored into at the top of each obit. FILL_PROPORTIONALLY fills + crops.
