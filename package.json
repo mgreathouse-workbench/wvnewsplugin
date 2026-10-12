@@ -1,0 +1,14 @@
+{
+  "name": "wvnews-print-plugin",
+  "version": "0.1.16",
+  "private": true,
+  "description": "WVNews Print — Adobe InDesign UXP panel. The plugin source needs no build step; this manifest exists for the lint gate and the packaging scripts.",
+  "scripts": {
+    "lint": "eslint plugin scripts --ext .js --quiet",
+    "lint:all": "eslint plugin scripts --ext .js",
+    "build": "node scripts/build-plugin-ccx.js"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.1"
+  }
+}

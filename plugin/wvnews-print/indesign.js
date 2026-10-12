@@ -20,6 +20,8 @@ const {
 // (ET_COL_W, ET_GUTTER, LEGAL_COLUMN_WIDTHS_IN) that could drift from the
 // platform's grid.
 const { columnWidthIn, columnOffsetIn, PAGE_FORMATS } = require('./page-geometry.js');
+const { classifiedPresentation } = require('./classified-presentation.js');
+const { LINER_TYPE } = require('./liner-type-spec.js');
 
 // The grid the plugin lays out on. Everything below was previously hardcoded
 // to the Exponent Telegram broadsheet; this names that assumption so it can
@@ -728,9 +730,21 @@ async function placeObitPhoto(id, doc, frame, anchor) {
 // (legals / classifieds / obits). The plugin creates the block frame itself
 // so content arrives WITH its block rather than needing a pre-drawn frame.
 //   width   one newspaper column on PAGE_FORMAT's grid (1.6458 in broadsheet)
-//   font    Helvetica Neue 8pt / 8.5pt leading
+//   font    LINER_TYPE — Helvetica Neue 8pt / 8.5pt leading
 //   align   left-justified (justify, last line flush left)
-const CONTENT_BLOCK = { widthIn: columnWidthIn(PAGE_FORMAT, 1), font: 'Helvetica Neue', pointSize: 8, leading: 8.5 };
+//
+// The type comes from the generated liner-type-spec.js rather than being
+// written here, because the platform now has to predict how much paper a
+// liner section needs BEFORE it is laid out — the Classifieds/Legals space
+// ticker in the Page Grid. An estimate computed from different numbers than
+// the ones applied below is a wrong page count, so there is one copy and the
+// platform owns it (wvnews-platform/src/lib/liner-type-spec.js).
+const CONTENT_BLOCK = {
+  widthIn: columnWidthIn(PAGE_FORMAT, 1),
+  font: LINER_TYPE.font,
+  pointSize: LINER_TYPE.pointSize,
+  leading: LINER_TYPE.leading,
+};
 
 // Obit portrait: a column-wide, portrait-ratio box the memorial photo is
 // anchored into at the top of each obit. FILL_PROPORTIONALLY fills + crops.
@@ -4378,15 +4392,22 @@ async function placeClassifiedSection(page, spread, items, styleMap, doc) {
   }
   const cats = [...byCat.keys()].sort((a, b) => a.localeCompare(b));
 
-  // One paragraph per line; track which paragraph indices are headers.
+  // One paragraph per line; track which paragraph indices are headers, and
+  // which carry paid add-ons.
   const lines = [];
   const headerIdx = [];
+  const adPara = [];          // { idx, headline, look }
   for (const cat of cats) {
     headerIdx.push(lines.length);
     lines.push(cat);
     for (const it of byCat.get(cat)) {
       const t = String(it.text || '').trim();
-      if (t) lines.push(t);
+      if (!t) continue;
+      const look = classifiedPresentation(it);
+      if (look.headlineBold || look.frameWeightPt) {
+        adPara.push({ idx: lines.length, headline: String(it.headline || '').trim(), look });
+      }
+      lines.push(t);
     }
   }
   if (!lines.length) return;
@@ -4406,6 +4427,93 @@ async function placeClassifiedSection(page, spread, items, styleMap, doc) {
     }
   } catch (e) {
     console.warn('[wvnews-print] classified header styling skipped:', e?.message || e);
+  }
+
+  // ── Paid add-ons ───────────────────────────────────────────────────
+  //
+  // Bold and featured are sold on every classified and printed nothing: the
+  // flags were priced and stored but never reached the page, so a customer
+  // paid $3 for a headline that came out identical to its neighbour's.
+  //
+  // A classified prints as one paragraph in a flowing column, so "a 3pt
+  // frame" is a PARAGRAPH BORDER rather than a drawn rectangle — a rectangle
+  // would have to be positioned against text that reflows every time the
+  // column does. The bold and the size apply to the HEADLINE's characters,
+  // not the whole line, because that is what was sold.
+  if (adPara.length) {
+    try {
+      const paras = frame.parentStory.paragraphs;
+      for (const { idx, headline, look } of adPara) {
+        if (idx >= paras.length) continue;
+        const para = paras.item(idx);
+
+        // The headline's characters, when the line starts with it. Otherwise
+        // the whole paragraph — better to bold a little too much than to
+        // charge for bold and print none.
+        let range = para;
+        try {
+          const contents = String(para.contents || '');
+          if (headline && contents.indexOf(headline) === 0) {
+            range = para.characters.itemByRange(0, headline.length - 1);
+          }
+        } catch (e) { /* fall back to the paragraph */ }
+
+        if (look.headlineBold) {
+          // fontStyle is the reliable lever here: applying a character style
+          // would need one to exist in every publication's template. Bold
+          // first, then whatever heavier weight the family actually has.
+          try { range.fontStyle = 'Bold'; } catch (e) {
+            try { range.fontStyle = 'Semibold'; } catch (e2) {
+              console.warn('[wvnews-print] classified bold unavailable in this font');
+            }
+          }
+        }
+        if (look.headlineScale > 1) {
+          try {
+            const base = Number(range.pointSize) || Number(para.pointSize) || 0;
+            if (base > 0) range.pointSize = Number((base * look.headlineScale).toFixed(2));
+          } catch (e) { /* size is a nicety; the frame is the signal */ }
+        }
+        // The rest of the line — the body — goes semibold on an upgraded ad.
+        // This is what buys the bold add-on its visibility without touching
+        // the ads that did not pay for it: an ordinary classified keeps
+        // exactly the setting it has always had.
+        if (look.bodyEmphasis && range !== para) {
+          try {
+            const total = para.characters.length;
+            if (headline && total > headline.length) {
+              const body = para.characters.itemByRange(headline.length, total - 1);
+              try { body.fontStyle = 'Semibold'; } catch (e) {
+                // Many newsprint faces ship Regular/Bold and nothing between.
+                // Leaving the body alone is better than jumping it to Bold,
+                // which would flatten the headline's own emphasis.
+                console.warn('[wvnews-print] no Semibold in this font — classified body left as set');
+              }
+            }
+          } catch (e) { /* body emphasis is secondary to the headline */ }
+        }
+        if (look.frameWeightPt) {
+          try {
+            para.paragraphBorderOn = true;
+            para.paragraphBorderWeight = look.frameWeightPt;
+            para.paragraphBorderColor = doc.colors.item('Black');
+            // Without insets the border sits on the type; without space the
+            // borders of two adjacent featured ads collide into one box.
+            para.paragraphBorderTopOffset = 3;
+            para.paragraphBorderBottomOffset = 3;
+            para.paragraphBorderLeftOffset = 3;
+            para.paragraphBorderRightOffset = 3;
+            para.spaceBefore = 6;
+            para.spaceAfter = 6;
+          } catch (e) {
+            console.warn('[wvnews-print] featured border unavailable:', e?.message || e);
+          }
+        }
+      }
+      console.log(`[wvnews-print] classifieds: styled ${adPara.length} paid add-on(s)`);
+    } catch (e) {
+      console.warn('[wvnews-print] classified add-on styling skipped:', e?.message || e);
+    }
   }
 }
 

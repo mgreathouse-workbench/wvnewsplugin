@@ -656,25 +656,66 @@ function renderMarketplaceView() {
 
 // Display ads are image placements (not text blocks), so they get their own
 // per-item list with individual Place buttons + a Publish Page action.
+//
+// GROUPED BY SECTION. An ad can be sold run-of-paper or sold INTO the
+// classified or legal section, and the platform now records which
+// (print.adSection — see ad-section.js there). This list used to show every
+// scheduled ad with artwork for the edition, so an artist laying out four
+// pages of classifieds was offered the whole paper's advertising and had to
+// know from memory which three belonged to them.
+//
+// The liner sections come FIRST, because this panel is the one used while
+// laying out liners — the Page Grid is where run-of-paper ads get placed, and
+// it now filters these out for the same reason.
 function renderAdsSection(m) {
   const ads = (m.ads && m.ads.items) || [];
   const placed = state.placedAds || {};
-  const items = ads.map(a => {
+
+  const SECTIONS = [
+    { key: 'classified', label: 'Classified section' },
+    { key: 'legal', label: 'Legal section' },
+    { key: 'rop', label: 'Run of paper' },
+  ];
+  const groups = { classified: [], legal: [], rop: [] };
+  for (const a of ads) {
+    const k = groups[a.adSection] ? a.adSection : 'rop';
+    groups[k].push(a);
+  }
+
+  const item = (a) => {
     const isPlaced = placed[String(a.id)];
     const color = a.colorRequired ? ' <span style="color:#c026d3;font-size:9px;font-weight:700;">● COLOR</span>' : '';
     const dims = (a.widthIn && a.heightIn) ? `${a.widthIn}×${a.heightIn}in` : '';
+    // An ad whose section was GUESSED from the old free-text print.sec rather
+    // than set outright. Worth a mark: it is here because nobody chose, which
+    // is a different thing from somebody choosing.
+    const inferred = a.adSectionSource === 'inferred'
+      ? ' <span style="color:#b45309;font-size:9px;" title="Section inferred from the old Section field, not set on the order">~</span>'
+      : '';
     return `
       <div class="story" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
         <div>
-          <div class="story-headline">${escapeHtml(a.advertiser || 'Display ad')}${color}</div>
+          <div class="story-headline">${escapeHtml(a.advertiser || 'Display ad')}${color}${inferred}</div>
           <div class="story-meta">${escapeHtml(a.sizeCode || '')}${dims ? ' · ' + dims : ''}${isPlaced ? ` · <span style="color:#2563eb;">placed ${escapeHtml(isPlaced)}</span>` : ''}</div>
         </div>
         <button class="primary" data-ad-place="${escapeHtml(String(a.id))}" ${state.busy ? 'disabled' : ''}>Place</button>
       </div>`;
-  }).join('');
+  };
+
+  const group = (g) => {
+    const rows = groups[g.key];
+    if (!rows.length) return '';
+    return `
+      <div class="story-meta" style="margin:6px 0 2px;font-weight:700;color:#374151;">
+        ${g.label} <span style="font-weight:400;">(${rows.length})</span>
+      </div>
+      ${rows.map(item).join('')}`;
+  };
+
+  const body = SECTIONS.map(group).join('');
   return `
     <div class="story-headline" style="margin-top:10px;">Display Ads <span class="story-meta">(${ads.length})</span></div>
-    ${ads.length ? items : '<div class="story-meta" style="padding:2px 0 6px;">No scheduled ads with artwork for this edition.</div>'}
+    ${ads.length ? body : '<div class="story-meta" style="padding:2px 0 6px;">No scheduled ads with artwork for this edition.</div>'}
     <div class="row" style="margin:2px 0 8px;justify-content:flex-end;">
       <button class="secondary" id="btn-ad-publish" ${state.busy ? 'disabled' : ''}
         title="Flip every placed ad on the active InDesign page to Published.">✓ Publish Page</button>

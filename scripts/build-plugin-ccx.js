@@ -44,6 +44,13 @@ const required = [
   'config.js',
   'storage.js',
   'styles.css',
+  // Generated from the platform by scripts/generate-plugin-modules.mjs.
+  // indesign.js requires all three at load time, so a missing one is not a
+  // degraded plugin — it is a plugin that throws on startup. Checked here
+  // because the zip takes the whole tree and would happily ship without them.
+  'page-geometry.js',
+  'color-placement.js',
+  'liner-type-spec.js',
   'icons/icon-light.png',
   'icons/icon-light@2x.png',
   'icons/icon-dark.png',
