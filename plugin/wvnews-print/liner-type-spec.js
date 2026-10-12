@@ -11,7 +11,7 @@
 // module and regenerate — never edit this file directly, or the plugin will
 // disagree with the rest of the system.
 //
-// sourceSha256: f0d3f0e741e1455a
+// sourceSha256: b25fa8fa0c93dfe9
 
 // How a liner is actually typeset: classifieds, legal notices, obituaries.
 //
@@ -110,26 +110,39 @@ function inchesForLines(lines, { linesPerInch = LINES_PER_INCH } = {}) {
   return n / lpi;
 }
 
-// An obituary's portrait, from the plugin's own geometry:
-//   indesign.js  OBIT_PHOTO_ASPECT = 1.2   // height = width * 1.2 (portrait)
-// Column-wide, so its depth follows the column width exactly.
-const OBIT_PHOTO_ASPECT = 1.2;
+// A liner's photo: column-wide, portrait. ONE aspect for obituaries and
+// classifieds alike (Mike 2026-10-12), so there is one constant and one
+// placement path rather than two that can drift apart.
+//
+// From the plugin's own geometry — placeObitPhoto pre-sizes the inline frame
+// to the column width times this ratio, then FILL_PROPORTIONALLY crops to it.
+const LINER_PHOTO_ASPECT = 1.2;
 
-function obitPhotoDepthIn(widthIn) {
+// Depth of a column-wide liner photo, for a block `widthIn` inches wide.
+function linerPhotoDepthIn(widthIn) {
   const w = Number(widthIn);
-  return Number.isFinite(w) && w > 0 ? w * OBIT_PHOTO_ASPECT : 0;
+  return Number.isFinite(w) && w > 0 ? w * LINER_PHOTO_ASPECT : 0;
 }
 
-// A CLASSIFIED's photo add-on does not print.
+// Kept under the old names — indesign.js already requires OBIT_PHOTO_ASPECT,
+// and renaming it in a generated module would break the plugin at load time.
+const OBIT_PHOTO_ASPECT = LINER_PHOTO_ASPECT;
+const obitPhotoDepthIn = linerPhotoDepthIn;
+
+// A CLASSIFIED's photo add-on DOES print, as of 2026-10-12.
 //
-// classified-presentation.js, which the plugin also has a generated copy of,
-// is explicit: "photo — an image on the ad. WEB ONLY — a classified prints as
-// a text line in a stacked column, and an image cannot be placed in one
-// without geometry the print grid does not have for it."
+// It did not before, and the reason recorded was that "an image cannot be
+// placed in [a stacked column] without geometry the print grid does not have
+// for it". That turned out to be untrue: the plugin already anchors a
+// column-wide portrait into an obituary block, and a category banner into a
+// classified block, by exactly the same inline-frame mechanism. The geometry
+// existed — the classified path had never been wired to it.
 //
-// So a classified billed for a photo takes no extra paper, and a space
-// estimate that allowed for one would over-reserve the section.
-const CLASSIFIED_PHOTO_PRINTS = false;
+// This matters to the space estimate as much as to the page. A photo is 1.2x
+// the column width deep: 1.98in on a broadsheet, against the 0.83in a typical
+// liner's text occupies. The photo is the dominant cost of the ad, so a
+// section whose photos go uncounted will not fit on the pages set aside.
+const CLASSIFIED_PHOTO_PRINTS = true;
 
 // The whole resolved spec for a publication format, for a UI that wants to
 // show its workings rather than assert a number.
@@ -152,6 +165,8 @@ module.exports = {
   LINES_PER_INCH,
   charsPerLineForWidth,
   inchesForLines,
+  LINER_PHOTO_ASPECT,
+  linerPhotoDepthIn,
   OBIT_PHOTO_ASPECT,
   obitPhotoDepthIn,
   CLASSIFIED_PHOTO_PRINTS,
