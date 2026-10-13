@@ -50,6 +50,7 @@ const required = [
   // because the zip takes the whole tree and would happily ship without them.
   'page-geometry.js',
   'color-placement.js',
+  'classified-presentation.js',
   'liner-type-spec.js',
   'icons/icon-light.png',
   'icons/icon-light@2x.png',
@@ -143,20 +144,32 @@ for (const f of [ccxOut, zipOut]) {
   if (fs.existsSync(f)) fs.unlinkSync(f);
 }
 
-// ── Files to bundle (everything under pluginDir except README + .DS_Store) ──
-const includeGlob = [
-  'manifest.json',
-  'index.html',
-  'app.js',
-  'auth.js',
-  'api.js',
-  'indesign.js',
-  'config.js',
-  'storage.js',
-  'styles.css',
-  'icons',
-];
+// ── Files to bundle ───────────────────────────────────────────────
+//
+// READ FROM THE DIRECTORY, not from a hand-kept list. This comment used to
+// say "everything under pluginDir except README + .DS_Store" while the code
+// below it was an allowlist of nine names, and the two drifted the moment
+// the generated modules arrived:
+//
+//   page-geometry.js, color-placement.js, classified-presentation.js,
+//   liner-type-spec.js
+//
+// All four are `require`d at load time by indesign.js and app.js, none were
+// in the allowlist, and so every .ccx built since they were introduced threw
+// on startup and showed an empty panel in InDesign. The sanity check at the
+// top of this script did not catch it because it checks the SOURCE TREE,
+// which had the files all along — the archive is what was missing them.
+//
+// A list you have to remember to update is a list that will be wrong again
+// the next time the platform generates a new module.
 const excludePatterns = ['README.md', '.DS_Store', '*.log'];
+const includeGlob = fs.readdirSync(buildDir)
+  .filter(name => !name.startsWith('.'))
+  .filter(name => !excludePatterns.some(pat => pat.startsWith('*')
+    ? name.endsWith(pat.slice(1))
+    : name === pat))
+  .sort();
+if (!includeGlob.length) fail('nothing to bundle — the plugin directory is empty');
 
 // Use system `zip` for reliability. It's available on macOS + Linux
 // out of the box; on Windows the user is expected to use UXP Developer
@@ -174,6 +187,38 @@ for (const pat of excludePatterns) {
 }
 const result = spawnSync(zipBin, args, { cwd: buildDir, stdio: 'inherit' });
 if (result.status !== 0) fail(`zip exited with status ${result.status}`);
+
+// ── Verify the ARCHIVE, not the source tree ───────────────────────
+//
+// The sanity check at the top of this script proves the files exist on disk.
+// It proved exactly that while shipping archives that were missing four of
+// them. What matters is what came out, so read the archive back and insist
+// every required file is in it.
+{
+  const listed = spawnSync(which('unzip') || 'unzip', ['-Z1', zipOut], { encoding: 'utf8' });
+  if (listed.status !== 0) {
+    fail('could not read the archive back to verify it');
+  }
+  const inZip = new Set(listed.stdout.split('\n').map(l => l.trim()).filter(Boolean));
+  const missing = required.filter(f => !inZip.has(f));
+  if (missing.length) {
+    fail(`archive is missing ${missing.length} required file(s): ${missing.join(', ')}\n`
+      + `  They exist in plugin/wvnews-print/ but did not reach the .ccx.\n`
+      + `  A plugin without them throws on require() and shows an empty panel.`);
+  }
+  // Every require('./x.js') in the shipped JS has to resolve inside the zip.
+  const localRequires = new Set();
+  for (const f of [...inZip].filter(n => n.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(buildDir, f), 'utf8');
+    for (const m of src.matchAll(/require\(['"]\.\/([^'"]+)['"]\)/g)) localRequires.add(m[1]);
+  }
+  const unresolved = [...localRequires].filter(r => !inZip.has(r));
+  if (unresolved.length) {
+    fail(`archive has unresolvable require(): ${unresolved.join(', ')}`);
+  }
+  console.log(`✓ Archive verified: ${inZip.size} entries, `
+    + `${localRequires.size} local require() targets all present`);
+}
 
 // ── Clean up the staged temp dir (if we built one) ─────────────────
 if (tempBuildDir && fs.existsSync(tempBuildDir)) {
