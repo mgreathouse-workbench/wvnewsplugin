@@ -398,6 +398,9 @@ function renderMain() {
   for (const el of document.querySelectorAll('[data-folio-checkout]')) {
     el.onclick = () => onCheckoutPage(el.getAttribute('data-folio-checkout'));
   }
+  for (const el of document.querySelectorAll('[data-folio-rebuild]')) {
+    el.onclick = () => onBuildOnePage(el.getAttribute('data-folio-rebuild'));
+  }
   for (const el of document.querySelectorAll('[data-folio-checkin]')) {
     el.onclick = () => onCheckinPage(el.getAttribute('data-folio-checkin'));
   }
@@ -1192,11 +1195,19 @@ function renderEditionDetail(pub) {
         } else {
           actionBtn = `<button class="secondary" data-folio-checkout="${escapeHtml(p.folio)}" style="font-size:10px;padding:2px 6px;" ${state.busy ? 'disabled' : ''}>Check out</button>`;
         }
+        // Rebuild just this page. Offered whenever nobody else holds the
+        // page: the build checks out, rebuilds and checks in by itself, and
+        // acquireLock lets the same user re-acquire, so holding it is not a
+        // reason to hide the button.
+        const rebuildBtn = (lock && !lock.expired && !youHold)
+          ? ''
+          : `<button class="secondary" data-folio-rebuild="${escapeHtml(p.folio)}" style="font-size:10px;padding:2px 6px;" ${state.busy ? 'disabled' : ''} title="Rebuild only this page from the current grid">Rebuild</button>`;
         return `
           <div style="display:flex;align-items:center;gap:8px;padding:2px 0;">
             <div style="width:32px;font-weight:700;">${escapeHtml(p.folio)}</div>
             <div style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" ${snipClass}>${escapeHtml(snipLabel)}</div>
             <div style="font-size:10px;color:${lockColor};font-family:monospace;white-space:nowrap;">${escapeHtml(lockText)}</div>
+            ${rebuildBtn}
             ${actionBtn}
           </div>`;
       }).join('')}
@@ -1596,6 +1607,63 @@ function minutesLeft(expiresAt) {
   if (!expiresAt) return 0;
   const ms = new Date(expiresAt).getTime() - Date.now();
   return Math.max(0, Math.floor(ms / 60000));
+}
+
+// Rebuild ONE page. Same machinery as Build Pages, pointed at a single
+// folio.
+//
+// Worth having its own entry point because the whole-edition build
+// overwrites every .indd in the folder. Correcting one page — an ad placed
+// after the build, a snippet changed — meant rebuilding 38 and throwing away
+// manual work on the 37 nobody asked about. (Mike 2026-10-14, asked
+// directly.)
+//
+// Deliberately does NOT touch the edition's status. `built` means every page
+// built, and rebuilding A5 says nothing about B7. The whole-edition build
+// still owns that transition.
+async function onBuildOnePage(folio) {
+  if (!state.selectedEditionId) { state.error = 'No edition selected.'; render(); return; }
+  state.busy = true; state.error = ''; state.info = ''; state.buildProgress = ''; render();
+  const PHASE = { checkout: 'locking page', create: 'opening template', download: 'downloading snippet', place: 'placing', save: 'checking in' };
+  try {
+    // Re-pull for the same reason the full build does: the ad may have been
+    // placed on the website a minute ago, and this panel's copy predates it.
+    const fresh = await getEdition(state.selectedEditionId);
+    if (fresh?.edition) state.selectedEdition = fresh.edition;
+    const pub = state.selectedEdition;
+    const page = (pub.pages || []).find(p => p.folio === folio);
+    if (!page) throw new Error(`${folio} is not a page of this edition.`);
+
+    // buildEditionPages takes an edition and builds every page in it, so hand
+    // it an edition of one. Everything else — template, style map, the fresh
+    // ad plan it fetches for itself — is unchanged.
+    const result = await buildEditionPages(
+      { ...pub, pages: [page] },
+      state.snippetsById,
+      (pr) => { state.buildProgress = `${pr.folio} — ${PHASE[pr.phase] || pr.phase}…`; render(); },
+    );
+
+    const r = (result.results || [])[0];
+    if (!r) throw new Error('The build reported no result for this page.');
+    // The per-page geometry notes are the point of the summary — they say
+    // where the ad actually landed — so they ride along on success too.
+    const diag = (r.diag || []).map(d => `    ${d}`);
+    if (r.saved) {
+      state.info = [
+        `Rebuilt ${r.folio}${r.version ? ` as v${r.version}` : ''}`
+        + `${r.placed ? '' : ' (no snippet placed)'}`
+        + `${r.assets && r.assets.placed ? ` + ${r.assets.placed} asset${r.assets.placed === 1 ? '' : 's'}` : ''}`
+        + `${r.assets && r.assets.missed ? ` (${r.assets.missed} missing)` : ''}`,
+        ...diag,
+      ].join('\n');
+    } else {
+      state.error = [`${r.folio} failed — ${r.error || 'unknown error'}`, ...diag].join('\n');
+    }
+  } catch (err) {
+    state.error = `Rebuild failed: ${err.message}`;
+  } finally {
+    state.busy = false; state.buildProgress = ''; render(); scrollResultIntoView();
+  }
 }
 
 // Build Pages: create one InDesign .indd per page in the edition's
