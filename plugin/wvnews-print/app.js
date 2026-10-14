@@ -1623,6 +1623,35 @@ function minutesLeft(expiresAt) {
   return Math.max(0, Math.floor(ms / 60000));
 }
 
+// A build writes a page and checks it in by itself. If the operator ALSO had
+// that folio open from an earlier check-out, that window is now stale — it
+// holds the pre-build layout, and saving it later would put the old page back
+// over the rebuilt one. Close it and forget the check-out.
+//
+// Returns a note when the window could not be closed, so the operator is told
+// to close it by hand rather than left with a stale page that looks current.
+// (Mike 2026-10-14: "Shouldn't check-in close the page?" — it does, but a
+// REBUILD was leaving the operator's own copy open.)
+function retireSupersededDoc(editionId, folio) {
+  const co = (state.checkouts || {})[coKey(editionId, folio)];
+  if (!co) return null;
+  let note = null;
+  try {
+    const stale = findOpenDocByTempPath(co.tempPath);
+    if (stale) {
+      closePageDoc(stale);
+      if (findOpenDocByTempPath(co.tempPath)) {
+        note = `${folio}: the copy you had open could not be closed — close it WITHOUT saving, `
+          + 'it holds the layout from before the rebuild.';
+      }
+    }
+  } catch {
+    note = `${folio}: could not close the copy you had open — close it without saving.`;
+  }
+  dropCheckout(editionId, folio);
+  return note;
+}
+
 // Rebuild ONE page. Same machinery as Build Pages, pointed at a single
 // folio.
 //
@@ -1661,10 +1690,10 @@ async function onBuildOnePage(folio) {
     if (!r) throw new Error('The build reported no result for this page.');
 
     // The build checked this page out, wrote it and checked it back in on its
-    // own. Any local check-out record for the folio now points at a document
-    // the build has already superseded, and leaving it would make the row
-    // offer a Check in that can only fail.
-    if (r.saved) dropCheckout(pub.id, r.folio);
+    // own. Any copy the operator had open is superseded; close it and drop
+    // the record, or the row offers a Check in that can only fail — and a
+    // later save would put the pre-build layout back.
+    const staleNote = r.saved ? retireSupersededDoc(pub.id, r.folio) : null;
     // The per-page geometry notes are the point of the summary — they say
     // where the ad actually landed — so they ride along on success too.
     const diag = (r.diag || []).map(d => `    ${d}`);
@@ -1675,6 +1704,7 @@ async function onBuildOnePage(folio) {
         + `${r.assets && r.assets.placed ? ` + ${r.assets.placed} asset${r.assets.placed === 1 ? '' : 's'}` : ''}`
         + `${r.assets && r.assets.missed ? ` (${r.assets.missed} missing)` : ''}`,
         ...diag,
+        ...(staleNote ? [staleNote] : []),
       ].join('\n');
     } else {
       state.error = [`${r.folio} failed — ${r.error || 'unknown error'}`, ...diag].join('\n');
@@ -1756,12 +1786,15 @@ async function onBuildEdition() {
       // reliably looks when an ad is in the wrong place.
       for (const d of (r.diag || [])) lines.push(`      ${d}`);
     }
-    state.info = lines.join('\n');
-
     // Same as the single-page rebuild: every page the build saved was checked
-    // out and back in by the build itself, so the panel's own check-out
-    // records for those folios are now stale.
-    for (const r of result.results) if (r.saved) dropCheckout(pub.id, r.folio);
+    // out and back in by the build itself, so any copy the operator had open
+    // is superseded and its check-out record is stale.
+    for (const r of result.results) {
+      if (!r.saved) continue;
+      const n = retireSupersededDoc(pub.id, r.folio);
+      if (n) lines.push(`  ! ${n}`);
+    }
+    state.info = lines.join('\n');
 
     // Mark built on the platform only when every page saved.
     if (result.failed === 0) {
