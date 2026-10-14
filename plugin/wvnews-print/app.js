@@ -1081,8 +1081,8 @@ function renderActiveCheckoutBanner(pub) {
         </span>
       </div>
       <div style="font-size:9px;color:#0a4a1c;margin-top:2px;">
-        Save in InDesign (Cmd-S) before checking in — Check in reads the saved file.
-        ${held.length > 1 ? 'Each page is read from its own saved file, so save them all.' : ''}
+        Check in saves the page, uploads it and closes it — no need to save first.
+        ${held.length > 1 ? 'Each page is saved and closed as it is checked in.' : ''}
       </div>
     </div>`;
 }
