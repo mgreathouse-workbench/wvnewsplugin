@@ -1576,9 +1576,14 @@ async function onCheckinPage(folio, note = '') {
     // touched. Refusing is the only safe answer.
     const doc = findOpenDocByTempPath(co.tempPath);
     if (!doc) {
-      throw new Error(`Could not find the open document for ${co.folio}. `
-        + `If you closed it without checking in, re-check-out the page. `
-        + `Nothing was uploaded.`);
+      // Tagged so the catch can clear the record. Without that, a checkout
+      // whose document is gone is permanent: the row keeps offering Check in
+      // because state.checkouts still has the page, and every click lands
+      // here. Nothing in the panel could clear it and nothing expired it.
+      const e = new Error(`${co.folio} is no longer open in InDesign, so nothing was uploaded. `
+        + `Its check-out has been cleared — use Check out to open it again.`);
+      e.code = 'DOC_NOT_OPEN';
+      throw e;
     }
     const bytes = await saveAndReadPageBytes({ doc, fileName: co.fileName });
     const result = await checkinPage({
@@ -1595,6 +1600,15 @@ async function onCheckinPage(folio, note = '') {
       state.error = `Lock on ${co.folio} no longer valid — your save was NOT uploaded. ${err.message}`;
       // Let go of THAT page only. Any others are still legitimately held.
       dropCheckout(co.editionId, co.folio);
+    } else if (err.code === 'DOC_NOT_OPEN') {
+      // The document this record pointed at is gone — closed by hand, or
+      // left behind by a rebuild that checked the page in for itself. The
+      // record can only produce this same failure from here, so drop it and
+      // let the row offer Check out again. Nothing was uploaded, and the
+      // page on the website is untouched.
+      state.error = err.message;
+      dropCheckout(co.editionId, co.folio);
+      refreshEditionPages(co.editionId).catch(() => {});
     } else {
       state.error = err.message;
     }
@@ -1645,6 +1659,12 @@ async function onBuildOnePage(folio) {
 
     const r = (result.results || [])[0];
     if (!r) throw new Error('The build reported no result for this page.');
+
+    // The build checked this page out, wrote it and checked it back in on its
+    // own. Any local check-out record for the folio now points at a document
+    // the build has already superseded, and leaving it would make the row
+    // offer a Check in that can only fail.
+    if (r.saved) dropCheckout(pub.id, r.folio);
     // The per-page geometry notes are the point of the summary — they say
     // where the ad actually landed — so they ride along on success too.
     const diag = (r.diag || []).map(d => `    ${d}`);
@@ -1737,6 +1757,11 @@ async function onBuildEdition() {
       for (const d of (r.diag || [])) lines.push(`      ${d}`);
     }
     state.info = lines.join('\n');
+
+    // Same as the single-page rebuild: every page the build saved was checked
+    // out and back in by the build itself, so the panel's own check-out
+    // records for those folios are now stale.
+    for (const r of result.results) if (r.saved) dropCheckout(pub.id, r.folio);
 
     // Mark built on the platform only when every page saved.
     if (result.failed === 0) {
