@@ -1589,6 +1589,36 @@ function minutesLeft(expiresAt) {
 // per-page progress. On a clean run (no failures) the edition is marked
 // `built` on the platform.
 async function onBuildEdition() {
+  if (!state.selectedEditionId) { state.error = 'No edition selected.'; render(); return; }
+
+  // RE-PULL THE EDITION FIRST.
+  //
+  // state.selectedEdition is a snapshot taken by selectEdition() when the
+  // operator drilled into the edition, and nothing refreshed it afterwards.
+  // The Page Grid is a separate web app: an ad dropped onto a page there
+  // after the plugin loaded the edition was simply not in this object, so
+  // Build Pages rebuilt from the stale plan and produced a byte-identical
+  // file. The ad never appeared and nothing reported a problem — the build
+  // genuinely succeeded, against the wrong plan.
+  //
+  // A page plan older than the panel is the normal case, not the exception:
+  // placement happens on the website while InDesign sits open.
+  //
+  // (Mike 2026-10-14: full page placed on A5, rebuilt, "it is not showing
+  // up". A5 v2 and v3 were both 2002944 bytes.)
+  state.busy = true; state.error = ''; render();
+  try {
+    const fresh = await getEdition(state.selectedEditionId);
+    if (fresh?.edition) state.selectedEdition = fresh.edition;
+  } catch (err) {
+    // Build from what we have rather than refusing — an offline rebuild of
+    // an unchanged edition is still useful — but say the plan may be stale.
+    state.info = `Could not refresh the page plan (${err.message}); `
+      + 'building from the plan loaded earlier.';
+  } finally {
+    state.busy = false;
+  }
+
   const pub = state.selectedEdition;
   if (!pub) { state.error = 'No edition selected.'; render(); return; }
   const total = (pub.pages || []).length;
