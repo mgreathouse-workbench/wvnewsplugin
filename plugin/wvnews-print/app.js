@@ -1173,7 +1173,22 @@ function renderEditionDetail(pub) {
         if (youHold) {
           actionBtn = `<button class="primary" data-folio-checkin="${escapeHtml(p.folio)}" style="font-size:10px;padding:2px 6px;">Check in</button>`;
         } else if (lock && !lock.expired) {
-          actionBtn = `<span style="font-size:10px;color:#888;">locked</span>`;
+          // A DEAD END used to live here: the word "locked" and no button.
+          //
+          // `youHold` is true only when this panel's own state.checkouts has
+          // the page. Reload the panel — which a UDT reload or a plugin update
+          // does — and that goes, while the SERVER lock stays. The row then
+          // offered no way forward: no Check in (the panel had forgotten it)
+          // and no Check out, so the page sat unreachable until the lock
+          // expired 90 minutes later. (Mike 2026-10-14, stuck on A1 and A5.)
+          //
+          // Offer the button and let the server decide. acquireLock already
+          // permits the SAME user to re-acquire, and answers 423 with the
+          // holder when it is somebody else — which the catch in
+          // onCheckoutPage renders as "A5 is checked out by Brian (42m left)".
+          // The badge beside this already says who holds it, so nothing is
+          // hidden by making the action available.
+          actionBtn = `<button class="secondary" data-folio-checkout="${escapeHtml(p.folio)}" style="font-size:10px;padding:2px 6px;" ${state.busy ? 'disabled' : ''}>Re-open</button>`;
         } else {
           actionBtn = `<button class="secondary" data-folio-checkout="${escapeHtml(p.folio)}" style="font-size:10px;padding:2px 6px;" ${state.busy ? 'disabled' : ''}>Check out</button>`;
         }
