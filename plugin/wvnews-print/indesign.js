@@ -5303,6 +5303,27 @@ async function saveAndReadPageBytes({ doc, fileName }) {
   return await entry.read({ format: require('uxp').storage.formats.binary });
 }
 
+// Read a checked-out page's bytes straight off disk, without a document.
+//
+// Check-in used to require the document to still be OPEN. Close it and save
+// it first — which is what a person does when they have finished with a page
+// — and check-in refused, uploaded nothing, and the work sat in the temp
+// file while the website kept the old version. (Mike 2026-10-15: "I closed
+// it and saved it. Checked it in." A1 stayed at v4.)
+//
+// Reading the folio's own temp path is unambiguous: it is that page's file
+// and no other. That is what made the old activeDocument() fallback unsafe
+// and this safe — the fallback guessed from whatever was in front, this
+// names the file.
+//
+// Throws if there is nothing there, so the caller can tell the difference
+// between "saved and closed" and "never opened".
+async function readPageBytes(fileName) {
+  const folder = await tempFolder();
+  const entry = await folder.getEntry(fileName);   // throws when absent
+  return await entry.read({ format: require('uxp').storage.formats.binary });
+}
+
 async function closePageDoc(doc) {
   if (!doc) return;
   const id = host();
@@ -5323,6 +5344,6 @@ module.exports = {
   activeDocument, activePageLabel,
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
-  openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
+  openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, readPageBytes, closePageDoc,
   closeOpenPageDoc, abortPlaceGun, activeDocIsPage,
 };
