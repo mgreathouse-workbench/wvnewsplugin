@@ -4,3 +4,5 @@ dist/
 *.zip
 .DS_Store
 .build-plugin-tmp/
+# Smoke-test screenshots (npm run test:ui -- --shots)
+dev/screenshots/
