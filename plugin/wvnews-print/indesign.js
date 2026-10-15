@@ -5039,6 +5039,49 @@ function cloudPageTempName(editionId, folio) {
   return `wv_${safeEdition}_${safeFolio}.indd`;
 }
 
+// Close any document already open at a page's temp path.
+//
+// MUST RUN BEFORE A BUILD. The build saves to wv_<edition>_<folio>.indd, and
+// InDesign refuses with "Cannot save to the file ... because it is already
+// open" if the operator still has that page open from an earlier check-out.
+// The build then fails the page outright:
+//
+//   B1 failed — Cannot save to the file "wv_EXT_101726_B1.indd",
+//   because it is already open.
+//
+// Closing afterwards, which is what the first attempt at this did, is too
+// late — the save has already failed. (Mike 2026-10-15.)
+//
+// Matched BY PATH rather than by what the panel thinks it has checked out:
+// a document left open by a crash, a reload or a previous session is exactly
+// the one that blocks the save, and the panel has no record of it.
+//
+// SaveOptions.NO is deliberate. The build is about to replace this page from
+// the grid, so unsaved changes in the open copy are already superseded —
+// keeping them would put the pre-rebuild layout back.
+function closeOpenPageDoc(editionId, folio) {
+  const id = host();
+  const name = cloudPageTempName(editionId, folio);
+  let found = 0;
+  let closed = 0;
+  try {
+    // Backwards: closing removes an item and shifts the ones after it.
+    for (let i = id.app.documents.length - 1; i >= 0; i--) {
+      let d;
+      try { d = id.app.documents.item(i); } catch { continue; }
+      try {
+        const n = String(d.name || '');
+        const full = String(d.fullName || '');
+        if (n !== name && full.indexOf(name) === -1) continue;
+        found++;
+        try { d.close(id.SaveOptions.NO); closed++; }
+        catch { /* reported to the caller via found > closed */ }
+      } catch { /* unreadable document — skip it */ }
+    }
+  } catch { /* no documents open */ }
+  return { found, closed };
+}
+
 // Download → write to temp → open. `arrayBuffer` is the .indd bytes,
 // `editionId`/`folio` name the temp file. Returns the opened doc
 // reference plus the temp path so heartbeats / check-in know where to
@@ -5161,4 +5204,5 @@ module.exports = {
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
+  closeOpenPageDoc,
 };
