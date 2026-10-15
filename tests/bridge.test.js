@@ -181,3 +181,90 @@ test('openDocumentNames lists every open document', () => {
   host([doc(A1), doc(A6), doc('Untitled-1')]);
   assert.deepEqual(id.openDocumentNames(), [A1, A6, 'Untitled-1']);
 });
+
+// ── groupStoryBlock and frameToJumpFrom ───────────────────────────────
+//
+// A story block is a body frame that wraps around the headline, photo, mug
+// and byline frames placed over it. Grouping must keep that composition.
+
+// InDesign objects stringify as "[object ClassName]"; the bridge reads the
+// class from that. Descriptors, not spread, so getters stay live.
+function item(cls, props = {}) {
+  return Object.defineProperties({ toString: () => `[object ${cls}]` }, Object.getOwnPropertyDescriptors(props));
+}
+
+// Text frames whose line count depends on whether wrap still applies once
+// the block is grouped (`wrapSurvives`), the way InDesign would recompose.
+function storyBlock({ wrapSurvives = true } = {}) {
+  const state = { grouped: false };
+  const text = (name, lines, overflows = false) => item('TextFrame', {
+    name,
+    get lines() { return { length: state.grouped && !wrapSurvives && name === 'body' ? lines + 9 : lines }; },
+    get overflows() { return state.grouped && !wrapSurvives && name === 'body' ? false : overflows; },
+    parentStory: { recompose() {} },
+  });
+  const frames = [text('body', 41, true), text('headline', 2), item('Rectangle', { name: 'photo' }), text('caption', 3)];
+  const container = {
+    groups: {
+      add(items) {
+        state.grouped = true;
+        const group = item('Group', {
+          name: '', labels: {}, children: items, ungrouped: false,
+          insertLabel(k, v) { this.labels[k] = v; },
+          ungroup() { this.ungrouped = true; state.grouped = false; },
+        });
+        container.made = group;
+        return group;
+      },
+    },
+  };
+  return { frames, container, state };
+}
+
+const STORY = { id: 'TESTED-story-01', headline: 'Country music icon Dolly Parton dies at 80' };
+
+test('groupStoryBlock groups a story, names it for the Layers panel and stamps its id', () => {
+  const { frames, container } = storyBlock();
+  const r = id.groupStoryBlock(frames, frames, STORY, container);
+  assert.equal(r.grouped, true);
+  assert.deepEqual(container.made.children, frames);
+  assert.equal(container.made.name, 'Story: Country music icon Dolly Parton dies at 80');
+  assert.equal(container.made.labels['wvnews-asset-id'], 'TESTED-story-01');
+});
+
+test('groupStoryBlock undoes the group if grouping changed how the text wraps', () => {
+  const { frames, container, state } = storyBlock({ wrapSurvives: false });
+  const r = id.groupStoryBlock(frames, frames, STORY, container);
+  assert.equal(r.grouped, false);
+  assert.match(r.reason, /changed how its text wraps/);
+  assert.equal(container.made.ungrouped, true);
+  assert.equal(state.grouped, false);
+});
+
+test('groupStoryBlock leaves a one-frame block alone', () => {
+  const { frames, container } = storyBlock();
+  const r = id.groupStoryBlock([frames[0]], [frames[0]], STORY, container);
+  assert.deepEqual(r, { grouped: false, reason: 'the block is a single frame' });
+  assert.equal(container.made, undefined);
+});
+
+test('groupStoryBlock reports InDesign refusing, and the story stays placed', () => {
+  const { frames } = storyBlock();
+  const refusing = { groups: { add() { throw new Error('Cannot group locked objects.'); } } };
+  const r = id.groupStoryBlock(frames, frames, STORY, refusing);
+  assert.equal(r.grouped, false);
+  assert.match(r.reason, /would not group it \(Cannot group locked objects\.\)/);
+});
+
+test('frameToJumpFrom finds the overflowing frame inside a selected story group', () => {
+  const { frames } = storyBlock();
+  const group = item('Group', { allPageItems: frames });
+  assert.equal(id.frameToJumpFrom(group), frames[0]);
+});
+
+test('frameToJumpFrom passes a frame through, and finds nothing in a story that fits', () => {
+  const { frames } = storyBlock();
+  assert.equal(id.frameToJumpFrom(frames[1]), frames[1]);
+  const fits = item('Group', { allPageItems: [frames[1], frames[2]] });
+  assert.equal(id.frameToJumpFrom(fits), null);
+});

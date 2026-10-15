@@ -283,7 +283,12 @@ await scenario('paginate opens the page, fronts it, then places', async () => {
   expect(ap.length === 1, 'auto-paginate did not run');
   expect(ap[0].args[3] === 'wv_EXT_101726_A3.indd', `placed into the wrong document: ${ap[0].args[3]}`);
   expect((await calls(c.page, 'checkoutPage')).some((x) => x.args[0] === 'A3'), 'A3 was not opened first');
-  expect(/Placed 4 of 4 stories on A3/.test(await statusText(c.page)), `paginate result: ${await statusText(c.page)}`);
+  expect(/Placed 4 of 4 stories on A3\. One was left ungrouped — see Details\./.test(await statusText(c.page)), `paginate result: ${await statusText(c.page)}`);
+  expect(await statusKind(c.page) === 'warning', 'an ungrouped story did not make the result a warning');
+  await click(c.page, 'toggleDetails');
+  const details = await c.page.$eval('#status-details', (el) => el.value);
+  expect(/pos-3 .* — left ungrouped: grouping changed how its text wraps/.test(details), `details do not say which story or why:\n${details}`);
+  expect(!/pos-1 .*ungrouped/.test(details), 'a grouped story was reported as ungrouped');
   return c;
 });
 

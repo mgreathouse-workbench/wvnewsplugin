@@ -136,14 +136,20 @@ function createBudget(ctx) {
         }).catch(() => { /* the page is right; the tracker catches up on the next load */ });
       }
 
+      // Each placed story is grouped; one that could not be says why.
+      const ungrouped = result.placements.filter((p) => p.placed && p.grouped === false);
       const lines = result.placements.map((p) =>
-        `${p.placed ? '✓' : '✗'} ${p.position.id} (${p.position.defaultBlock}) — ${p.story.headline}${p.error ? ` — ${p.error}` : ''}`);
+        `${p.placed ? '✓' : '✗'} ${p.position.id} (${p.position.defaultBlock}) — ${p.story.headline}`
+        + `${p.error ? ` — ${p.error}` : ''}`
+        + `${p.placed && p.grouped === false ? ` — left ungrouped: ${p.groupNote || 'no reason given'}` : ''}`);
       for (const u of result.unplaced || []) lines.push(`· skipped “${u.story.headline}” — ${u.reason}`);
       if (result.overBudgeted && result.overBudgetMessage) lines.push('', result.overBudgetMessage);
 
       try { await fetchInto(); } catch { /* the placement stands; badges refresh next load */ }
-      const text = `Placed ${result.successCount} of ${fmt.plural(result.totalStories, 'story', 'stories')} on ${folio}.`;
-      return { kind: result.successCount === result.totalStories ? 'success' : 'warning', text, details: lines.join('\n') };
+      const text = `Placed ${result.successCount} of ${fmt.plural(result.totalStories, 'story', 'stories')} on ${folio}.`
+        + (ungrouped.length ? ` ${ungrouped.length === 1 ? 'One was' : `${ungrouped.length} were`} left ungrouped — see Details.` : '');
+      const complete = result.successCount === result.totalStories && !ungrouped.length;
+      return { kind: complete ? 'success' : 'warning', text, details: lines.join('\n') };
     });
   }
 
@@ -199,8 +205,10 @@ function createBudget(ctx) {
       await record(a, null, `block:${blockId}:${(result.framesBound || []).join(',')}`);
       await fetchInto();
       const bound = result.framesBound || [];
+      const ungrouped = result.grouped === false ? `Left ungrouped: ${result.groupNote || 'no reason given'}` : '';
       return bound.length
-        ? { text: `Placed ${blockId} for “${a.headline}”.`, details: `Filled: ${bound.join(', ')}` }
+        ? { kind: ungrouped ? 'warning' : 'success', text: `Placed ${blockId} for “${a.headline}”.`,
+          details: [`Filled: ${bound.join(', ')}`, ungrouped].filter(Boolean).join('\n') }
         : { kind: 'warning', text: `Placed ${blockId}, but none of its placeholders matched this story.` };
     });
   }

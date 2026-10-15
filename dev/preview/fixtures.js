@@ -243,12 +243,17 @@
     verifyPlacedAssets: async () => ({ docNames: state.open.slice(), assetIds: state.open.includes('wv_EXT_101726_A1.indd') ? ['TESTED-story-01', 'TESTED-story-15'] : [] }),
     autoPaginatePage: async (profile, folio, stories) => {
       log('autoPaginatePage', [profile, folio, stories.length, state.front]); await wait(200);
-      const placements = stories.map((s, i) => ({ story: s, weight: i === 0 ? 'lead' : 'secondary', position: { id: `pos-${i + 1}`, defaultBlock: i === 0 ? '4col_story_1photo_1mug' : '2col_story' }, placed: true, framesBound: ['headline', 'body'] }));
+      const placements = stories.map((s, i) => ({
+        story: s, weight: i === 0 ? 'lead' : 'secondary',
+        position: { id: `pos-${i + 1}`, defaultBlock: i === 0 ? '4col_story_1photo_1mug' : '2col_story' },
+        placed: true, framesBound: ['headline', 'body'],
+        grouped: i !== 2, groupNote: i === 2 ? 'grouping changed how its text wraps, so its frames were left as placed' : '',
+      }));
       return { placements, unplaced: [], successCount: placements.length, totalStories: stories.length };
     },
     placeTemplate: async () => ({ page: 'A1', documentName: state.front, framesBound: ['headline', 'body'] }),
     placeStoryIntoSelectedFrame: async () => ({ page: 'A1', documentName: state.front, framesBound: ['headline', 'deck', 'byline', 'body'] }),
-    placeAndBindStoryBlock: async () => ({ framesBound: ['print_headline', 'nameline', 'main story'] }),
+    placeAndBindStoryBlock: async () => ({ framesBound: ['print_headline', 'nameline', 'main story'], grouped: true, groupNote: '' }),
     flowFullStoryIntoLabelledFrames: async () => ({ page: 'A1', documentName: state.front, framesBound: ['headlineFrame', 'bodyFrame'], missing: [] }),
     flowIntoSelectedFrame: async () => ({ page: 'A1', documentName: state.front, framesBound: ['body'] }),
     placePhotoInSelection: async () => ({ page: 'A1', documentName: state.front }),

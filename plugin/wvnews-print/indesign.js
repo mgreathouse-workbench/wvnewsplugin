@@ -42,6 +42,16 @@ function host() {
   return ID;
 }
 
+// The class of an InDesign DOM object: "TextFrame", "Group", "Page"…
+// UXP does not expose constructor.name reliably; String(obj) is
+// "[object ClassName]".
+function classOf(it) {
+  try {
+    const m = /^\[object\s+([A-Za-z]+)\]/.exec(String(it));
+    return m ? m[1] : '';
+  } catch { return ''; }
+}
+
 function fs() {
   if (!UXP_FS) {
     const { storage } = require('uxp');
@@ -241,6 +251,7 @@ async function flowIntoSelectedFrame(story, styleMap, kind = 'body') {
           console.log('[wvnews-print] selection length:', sel?.length, 'type:', sel?.[0]?.constructor?.name);
           if (!sel || !sel.length) throw new Error('Select a frame first.');
           const frame = sel[0];
+          if (groupedStoryMessage(frame, 'frame')) throw new Error(groupedStoryMessage(frame, 'frame'));
           console.log('[wvnews-print] frame has parentStory:', !!frame.parentStory);
           const val = valueForBind(story, kind);
           console.log('[wvnews-print] value length:', val ? val.length : 0);
@@ -1122,6 +1133,7 @@ async function placePhotoInSelection(photo, story) {
           const sel = id.app.selection;
           if (!sel || !sel.length) throw new Error('Select an image frame first.');
           const frame = sel[0];
+          if (groupedStoryMessage(frame, 'image frame')) throw new Error(groupedStoryMessage(frame, 'image frame'));
           const buf = await fetchBinary(photo.url);
           const ext = (photo.url.split('?')[0].split('.').pop() || 'jpg').slice(0, 4);
           const tempPath = await writeTemp(`${story.id}-photo.${ext}`, buf);
@@ -1622,7 +1634,8 @@ async function captureSourceForJump(slug, styleMap) {
         try {
           const sel = id.app.selection;
           if (!sel || !sel.length) { restoreUnits(); throw new Error('Select the overflowing source frame first.'); }
-          const source = sel[0];
+          const source = frameToJumpFrom(sel[0]);
+          if (!source) { restoreUnits(); throw new Error('Nothing in that story overflows, so there is no jump to capture.'); }
           if (!source.parentStory) { restoreUnits(); throw new Error('Selection is not a text frame.'); }
 
           const sourcePage = (() => {
@@ -1821,6 +1834,7 @@ async function completeJumpToFrame(pending, styleMap) {
           const sel = id.app.selection;
           if (!sel || !sel.length) { restoreUnits(); throw new Error('Select an empty destination frame first.'); }
           const dest = sel[0];
+          if (groupedStoryMessage(dest, 'destination frame')) { restoreUnits(); throw new Error(groupedStoryMessage(dest, 'destination frame')); }
           if (!dest.parentStory) { restoreUnits(); throw new Error('Selection is not a text frame.'); }
 
           const destPage = (() => {
@@ -2234,6 +2248,8 @@ async function autoPaginatePage(pubProfile, pageRole, stories) {
       const result = await placeAndBindStoryBlock(blockId, p.story, anchor);
       p.placed = true;
       p.framesBound = result.framesBound;
+      p.grouped = !!result.grouped;
+      p.groupNote = result.groupNote || '';
       console.log('[wvnews-print] auto-paginate placed', p.story.id, 'at', p.position.id, 'as', blockId);
     } catch (e) {
       p.placed = false;
@@ -2461,8 +2477,10 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
     // the bug it was meant to fix: nothing placed.
     abortPlaceGun();
     doneWithUnits();
-    console.warn('[wvnews-print] place() did not add items within 2s — skipping bind for', story.id);
-    return { placed: [], framesBound: [] };
+    // A failure, not an empty success: auto-paginate used to count this story
+    // as placed and report "4 of 4" with one block missing from the page.
+    console.warn('[wvnews-print] place() did not add items within 2s for', story.id);
+    throw new Error(`The ${blockId} block did not land on the page.`);
   }
 
   // Collect new items via id diff — check both page and spread, since
@@ -2492,26 +2510,17 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   scan(spread, existingSpreadIds, 'spread');
   console.log('[wvnews-print] new items found:', newItems.length);
 
-  // Helper to robustly determine the class of an InDesign DOM object.
-  // UXP doesn't expose .constructor.name reliably; obj.toString()
-  // returns "[object ClassName]".
-  const classOf = (it) => {
+  // The block's own items, as opposed to frames nested inside them. Only these
+  // move (a nested child would be shifted twice) and only these are grouped.
+  const topLevel = newItems.filter(item => {
     try {
-      const s = String(it);
-      const m = s.match(/^\[object\s+([A-Za-z]+)\]/);
-      return m ? m[1] : '';
-    } catch { return ''; }
-  };
+      const pc = classOf(item.parent);
+      return pc === 'Page' || pc === 'Spread';
+    } catch { return false; }
+  });
 
-  // Move placed items to the requested anchor. Move only top-level
-  // (page/spread parent); group children would double-shift.
+  // Move placed items to the requested anchor.
   if (anchor && newItems.length > 0) {
-    const topLevel = newItems.filter(item => {
-      try {
-        const pc = classOf(item.parent);
-        return pc === 'Page' || pc === 'Spread';
-      } catch { return false; }
-    });
     console.log('[wvnews-print] top-level placed items:', topLevel.length);
 
     let minTop = Infinity, minLeft = Infinity;
@@ -2589,7 +2598,90 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   }
 
   console.log('[wvnews-print] framesBound:', framesBound);
-  return { placed: newItems, framesBound };
+
+  // Last, once every frame is filled: one story, one group.
+  const grouping = groupStoryBlock(topLevel, newItems, story, spread || page);
+  return { placed: newItems, framesBound, grouped: grouping.grouped, groupNote: grouping.reason || '' };
+}
+
+// Group one placed story's frames, so the story moves, copies and deletes as
+// a unit on the page.
+//
+// A story block is one composition. Its body frame carries no text wrap of its
+// own; it flows around the headline, photo, caption, mug, nameline and byline
+// frames, which each have a bounding-box wrap. Wrap set on items INSIDE a
+// group goes on applying to their siblings — it is wrap set on the group
+// itself that text inside the group ignores — but a story that silently ran
+// under its own photo would be worse than one left ungrouped, so this measures
+// rather than trusts: every text frame's line count and overflow must be the
+// same after grouping as before, or the group is undone.
+//
+//   topLevel   the block's own items (their parent is the page or spread)
+//   allItems   those plus anything nested in them, for the measurement
+//   container  the spread (or page) to make the group on
+//
+// Returns { grouped: true, group } or { grouped: false, reason }.
+function groupStoryBlock(topLevel, allItems, story, container) {
+  if (!topLevel || topLevel.length < 2) {
+    return { grouped: false, reason: topLevel && topLevel.length ? 'the block is a single frame' : 'nothing was placed' };
+  }
+  const before = textComposition(allItems);
+  let group;
+  try {
+    group = container.groups.add(topLevel);
+  } catch (e) {
+    console.warn('[wvnews-print] could not group story block:', e?.message || e);
+    return { grouped: false, reason: `InDesign would not group it (${e?.message || e})` };
+  }
+  const after = textComposition(allItems);
+  const changed = before.some((b, i) => b && after[i] && (b.lines !== after[i].lines || b.overflows !== after[i].overflows));
+  if (changed) {
+    try { group.ungroup(); } catch (e) { console.warn('[wvnews-print] could not undo the group:', e?.message || e); }
+    console.warn('[wvnews-print] grouping changed text composition; left ungrouped:', story && story.id);
+    return { grouped: false, reason: 'grouping changed how its text wraps, so its frames were left as placed' };
+  }
+  // The Layers panel shows the name, so the page reads as a list of stories.
+  const headline = String((story && story.headline) || '').replace(/\s+/g, ' ').trim();
+  try { group.name = `Story: ${headline.length > 60 ? `${headline.slice(0, 59)}…` : headline || story.id}`; } catch { /* cosmetic */ }
+  try { group.insertLabel('wvnews-asset-id', String(story.id)); } catch { /* the frames inside carry it too */ }
+  return { grouped: true, group };
+}
+
+// Lines and overflow of every text frame in a list, in order (null for items
+// that are not text frames or cannot be read). Asking for lines makes InDesign
+// compose the text first.
+function textComposition(items) {
+  return (items || []).map((it) => {
+    if (classOf(it) !== 'TextFrame') return null;
+    try {
+      try { it.parentStory.recompose(); } catch { /* composed on read anyway */ }
+      return { lines: it.lines.length, overflows: !!it.overflows };
+    } catch { return null; }
+  });
+}
+
+// The frame to capture a jump from, given what is selected. A story placed by
+// auto-paginate is a group, and the Selection tool selects the whole group;
+// the frame that matters is the one whose text overflows.
+function frameToJumpFrom(item) {
+  if (classOf(item) !== 'Group') return item;
+  let items = [];
+  try { items = item.allPageItems || []; } catch { return null; }
+  for (let i = 0; i < items.length; i++) {
+    try {
+      if (classOf(items[i]) === 'TextFrame' && items[i].overflows) return items[i];
+    } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+// A tool that fills ONE frame was given a whole grouped story: say how to get
+// at the frame inside, rather than doing nothing — a group has no text, so the
+// text tools used to skip it silently and report success.
+function groupedStoryMessage(item, what) {
+  return classOf(item) === 'Group'
+    ? `That is a grouped story. Double-click it to select the ${what} inside, then try again.`
+    : '';
 }
 
 // For a text frame whose contents matches a known placeholder string,
@@ -5418,5 +5510,5 @@ module.exports = {
   refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, readPageBytes, closePageDoc,
   closeOpenPageDoc, abortPlaceGun, activeDocIsPage, bringPageToFront, openDocumentNames,
-  uiBrightness,
+  uiBrightness, groupStoryBlock, frameToJumpFrom,
 };
