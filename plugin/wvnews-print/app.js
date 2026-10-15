@@ -429,8 +429,7 @@ function renderMain() {
       ? renderMarketplaceView()
       : view === 'pages'
       ? renderEditionDetail(ed)
-      : `${state.budget ? renderBudgetList() : '<div class="empty">Pick a publication and edition, then click Load budget.</div>'}
-         ${sel ? renderDetail(sel) : ''}`
+      : `${renderBudgetTab(ed, sel)}`
     }
   `;
   const btnChange = $('btn-change-edition');
@@ -730,7 +729,19 @@ function renderMarketplaceView() {
     return '<div class="empty">Pick a publication above to load its classifieds, legals, and obituaries.</div>';
   }
   const m = state.marketplace;
-  if (!m || m.loading) {
+  // NOT LOADED and LOADING are different states.
+  //
+  // Both used to return the spinner — and the Refresh button lives further
+  // down, after this return. So arriving at a marketplace that had never
+  // been fetched showed "Loading…" forever with no control to load it. Same
+  // dead end the Budget tab had.
+  if (!m) {
+    return `<div class="row" style="margin-bottom:8px;">
+        <button class="primary" id="btn-mkt-refresh" ${state.busy ? 'disabled' : ''}>Load marketplace${state.editionDate ? ` for ${escapeHtml(state.editionDate)}` : ''}</button>
+      </div>
+      <div class="empty">Classifieds, legals and obituaries for this edition have not been loaded yet.</div>`;
+  }
+  if (m.loading) {
     return '<div class="empty"><span class="spinner"></span> Loading marketplace…</div>';
   }
   const row = (kind, label) => {
@@ -979,6 +990,33 @@ async function onUpdateSectionHeaders() {
   } finally {
     state.busy = false; render();
   }
+}
+
+// The Budget tab, which has an edition already.
+//
+// It used to say "Pick a publication and edition, then click Load budget."
+// and leave you stuck: the pickers and the Load button render only when NO
+// edition is chosen, so with one chosen the instruction named two controls
+// that were not on screen. (Mike 2026-10-15: "the budget tab is asking me to
+// pick an edition, which I've already chosen in pages.")
+//
+// The tab now carries its own Load/Refresh for the edition in the context
+// bar, so the budget is one click from where you already are — and the
+// button says which edition it will load, rather than assuming you know.
+function renderBudgetTab(ed, sel) {
+  if (!ed) {
+    return state.budget
+      ? `${renderBudgetList()}${sel ? renderDetail(sel) : ''}`
+      : '<div class="empty">Pick a publication and edition above, then click Load budget.</div>';
+  }
+  const label = state.budget ? 'Refresh budget' : `Load budget for ${escapeHtml(ed.id)}`;
+  const bar = `<div class="row" style="margin-bottom:8px;">
+      <button class="primary" id="btn-load" ${state.busy ? 'disabled' : ''}>${label}</button>
+    </div>`;
+  if (!state.budget) {
+    return `${bar}<div class="empty">No budget loaded for ${escapeHtml(ed.editionDate || ed.id)} yet.</div>`;
+  }
+  return `${bar}${renderBudgetList()}${sel ? renderDetail(sel) : ''}`;
 }
 
 function renderEditionsView() {
