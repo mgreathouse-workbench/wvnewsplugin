@@ -31,13 +31,15 @@ function createCommon({ html, cx, flag }) {
   }
 
   function section({ title, count = null, actions = null, body, flush = false }) {
-    return html`<section class="${cx('section', flush && 'section--flush')}">
-      <header class="section-head">
+    // Plain divs: UXP's built-in styles cannot be relied on to make
+    // <section> and <header> blocks the way a browser does.
+    return html`<div class="${cx('section', flush && 'section--flush')}">
+      <div class="section-head">
         <span class="section-title">${title}${count != null ? html` <span class="section-count">${count}</span>` : ''}</span>
         ${actions ? html`<span class="section-actions">${actions}</span>` : ''}
-      </header>
+      </div>
       ${body}
-    </section>`;
+    </div>`;
   }
 
   function empty({ title, text = '', actions = null, busy = false }) {

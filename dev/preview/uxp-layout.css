@@ -1,0 +1,14 @@
+/* How UXP lays out flex items, where it differs from Chrome.
+ *
+ * A browser never shrinks a flex item below its content (min-height and
+ * min-width default to "auto"). UXP's layout engine does: when the panel's
+ * content is taller than the panel, every item in the column shrinks in
+ * proportion — including the tab bar, which collapsed to a sliver in
+ * InDesign on 2026-10-15 with the budget list drawn over it. Chrome hid that.
+ *
+ * Zero automatic minimums make the preview shrink the way UXP does, so a
+ * layout that only works because of them fails here too. Any explicit
+ * min-height / min-width in the panel's stylesheet still wins (this selector
+ * has no specificity).
+ */
+*, *::before, *::after { min-width: 0; min-height: 0; }

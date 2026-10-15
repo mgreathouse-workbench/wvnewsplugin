@@ -90,7 +90,7 @@ function createShell({ html, cx, fmt, ui, views, meta }) {
     const a = s.activity;
     return html`<div class="${cx('activity', a && 'is-on')}">
       <div class="activity-bar"><div class="activity-fill"></div></div>
-      ${a ? html`<div class="activity-text"><strong>${a.label}</strong>${a.detail ? html` — ${a.detail}` : ''}</div>` : ''}
+      ${a ? html`<div class="activity-text"><b>${a.label}</b>${a.detail ? html` — ${a.detail}` : ''}</div>` : ''}
     </div>`;
   }
 

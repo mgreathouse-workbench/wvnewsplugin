@@ -22,7 +22,7 @@ function createPagesView({ html, cx, fmt, ui }) {
         body: html`<div class="list">${pages.map((p) => pageRow(s, ed, p, busy))}</div>`,
       })}
       ${noSnippet ? html`<div class="callout callout--notice">
-          <div class="callout-text"><strong>${fmt.plural(noSnippet, 'page')} without a snippet</strong> will build from the master only, with no frames for stories or ads.</div>
+          <div class="callout-text"><b>${fmt.plural(noSnippet, 'page')} without a snippet</b> will build from the master only, with no frames for stories or ads.</div>
           ${!built ? ui.action({ label: 'Assign Snippets', action: 'editPlan', disabled: busy }) : ''}
         </div>` : ''}
       ${built ? rebuildAll(s, ed, busy) : ''}`;
@@ -109,7 +109,7 @@ function createPagesView({ html, cx, fmt, ui }) {
   function rebuildAll(s, ed, busy) {
     if (s.confirmBuild) {
       return html`<div class="callout callout--negative">
-        <div class="callout-text"><strong>Rebuild all ${(ed.pages || []).length} pages?</strong> Every page is rebuilt from the grid and checked in as a new version. Changes made by hand in InDesign are replaced.</div>
+        <div class="callout-text"><b>Rebuild all ${(ed.pages || []).length} pages?</b> Every page is rebuilt from the grid and checked in as a new version. Changes made by hand in InDesign are replaced.</div>
         <div class="callout-actions">
           ${ui.button({ label: 'Cancel', action: 'cancelBuild', variant: 'secondary', quiet: true })}
           ${ui.button({ label: 'Rebuild All Pages', action: 'confirmBuild', variant: 'warning', disabled: busy })}

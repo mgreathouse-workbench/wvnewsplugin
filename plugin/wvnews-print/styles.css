@@ -138,8 +138,19 @@ body { color: var(--fg); font-size: var(--fs); line-height: 1.35; }
 
 /* ── Frame ─────────────────────────────────────────────────────────────── */
 
+/* Only .content flexes; every other row of the frame keeps its size.
+   UXP, unlike a browser, will shrink a flex item below its own content when
+   the column overflows — a long budget list squeezed the tab bar to a sliver
+   and drew itself over the tabs (InDesign, 2026-10-15). So nothing here may
+   rely on a flex item's automatic minimum size: fixed rows say flex: none,
+   and the content area takes the space that is left (basis 0) and scrolls. */
 .app { display: flex; flex-direction: column; height: 100%; }
-.content { flex: 1 1 auto; overflow-y: auto; padding-bottom: 16px; }
+.ctx, .tabs, .activity, .status, .foot { flex: 0 0 auto; }
+.content { flex: 1 1 0px; min-height: 0; overflow-y: auto; padding-bottom: 16px; }
+
+/* The same rule inside rows: a control never shrinks below its label.
+   Text cells shrink instead, and end in an ellipsis. */
+sp-button, sp-action-button, sp-checkbox, .badge, .light, .chevron { flex-shrink: 0; }
 
 .ctx { display: flex; align-items: center; padding: 10px var(--gutter) 9px; border-bottom: 1px solid var(--line); }
 .ctx-main { flex: 1 1 auto; min-width: 0; }
@@ -152,7 +163,7 @@ body { color: var(--fg); font-size: var(--fs); line-height: 1.35; }
 /* Spectrum tabs: the selection line sits exactly under the label. */
 .tabs { display: flex; padding: 0 4px; border-bottom: 1px solid var(--line); }
 .tab {
-  padding: 8px 0 6px; margin: 0 8px; cursor: pointer;
+  flex: 0 0 auto; padding: 8px 0 6px; margin: 0 8px; cursor: pointer;
   color: var(--fg-2); border-bottom: 2px solid transparent; white-space: nowrap;
 }
 .tab:hover { color: var(--fg); }
@@ -177,7 +188,7 @@ body { color: var(--fg); font-size: var(--fs); line-height: 1.35; }
   padding: 6px 12px; font-size: var(--fs-s); color: var(--fg-2);
   border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.activity-text strong { color: var(--fg); }
+.activity-text b { color: var(--fg); }
 
 .status { border-top: 1px solid var(--line); padding: 6px var(--gutter); }
 .status--error { background: var(--negative-wash); }
@@ -198,19 +209,20 @@ body { color: var(--fg); font-size: var(--fs); line-height: 1.35; }
   display: flex; align-items: center; justify-content: space-between;
   min-height: 28px; padding: 0 var(--gutter); border-top: 1px solid var(--line);
 }
-.foot-text { font-size: var(--fs-s); color: var(--fg-2); }
+.foot-text { flex: 0 1 auto; min-width: 0; font-size: var(--fs-s); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .foot > .act { margin-right: var(--hang); }
 
 /* ── Sections and lists ─────────────────────────────────────────────── */
 
-.section { margin-top: 12px; }
+.section { display: block; margin-top: 12px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; min-height: 28px; padding: 0 var(--gutter) 2px; }
 .section-title {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   font-size: var(--fs-s); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2);
   white-space: nowrap;
 }
 .section-count { font-weight: 400; letter-spacing: 0; text-transform: none; margin-left: 4px; }
-.section-actions { display: flex; align-items: center; margin-right: var(--hang); }
+.section-actions { flex: 0 0 auto; display: flex; align-items: center; margin-left: 8px; margin-right: var(--hang); }
 .section-actions > * + * { margin-left: 2px; }
 .section-foot { display: flex; justify-content: flex-end; padding: 12px var(--gutter) 0; }
 .section-foot > .act:last-child { margin-right: var(--hang); }
@@ -259,7 +271,7 @@ body { color: var(--fg); font-size: var(--fs); line-height: 1.35; }
 .toolbar > * + * { margin-left: 8px; }
 .toolbar > .act:first-child { margin-left: var(--hang); }
 .toolbar > .act:last-child { margin-right: var(--hang); }
-.toolbar-text { color: var(--fg-2); font-size: var(--fs-s); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toolbar-text { flex: 0 1 auto; min-width: 0; color: var(--fg-2); font-size: var(--fs-s); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Badges and status lights ───────────────────────────────────────── */
 
@@ -335,8 +347,8 @@ body { color: var(--fg); font-size: var(--fs); line-height: 1.35; }
 .field-label { font-size: var(--fs-s); color: var(--fg-2); margin-bottom: 4px; }
 .field-note { font-size: var(--fs-s); color: var(--fg-2); margin-top: 4px; }
 .picker--wide, .btn--wide { width: 100%; }
-.tf-letter { width: 44px; }
-.tf-count { width: 64px; }
+.tf-letter { flex: 0 0 auto; width: 44px; }
+.tf-count { flex: 0 0 auto; width: 64px; }
 .form-actions { display: flex; justify-content: flex-end; padding: 16px var(--gutter) 4px; }
 
 /* Opens the calendar dialog. Drawn as a field, because it holds a value. */
@@ -365,7 +377,7 @@ body { color: var(--fg); font-size: var(--fs); line-height: 1.35; }
 .dialog-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
 .dialog-foot > * + * { margin-left: 8px; }
 .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
-.cal-arrows { display: flex; }
+.cal-arrows { flex: 0 0 auto; display: flex; }
 .cal-grid { display: flex; flex-wrap: wrap; }
 .cal-cell { flex: 0 0 14.2857%; max-width: 14.2857%; height: 32px; display: flex; align-items: center; justify-content: center; }
 .cal-dow .cal-cell { height: 22px; font-size: 10px; font-weight: 700; color: var(--fg-2); }

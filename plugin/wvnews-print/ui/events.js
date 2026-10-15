@@ -17,6 +17,11 @@
 //
 // Handlers receive (arg, element, event). `arg` is data-arg, the one value most
 // actions need — a folio, an id, a kind.
+//
+// Listeners are on the CAPTURE phase. Capture reaches #root on the way down to
+// the target whether or not the event bubbles, and whether a Spectrum
+// widget's change event bubbles in every UXP release is not something the
+// panel should have to depend on.
 
 function createEvents({ root, handlers, log = console }) {
   // Walk up by hand: Element.closest() is not guaranteed in every UXP release.
@@ -61,16 +66,16 @@ function createEvents({ root, handlers, log = console }) {
     invoke(kind, el.getAttribute(attr), el, read ? [read(el), arg, el, e] : [arg, el, e]);
   }
 
-  root.addEventListener('click', (e) => dispatch('click', 'data-action', e));
-  root.addEventListener('change', (e) => dispatch('change', 'data-change', e, valueOf));
-  root.addEventListener('input', (e) => dispatch('input', 'data-input', e, valueOf));
+  root.addEventListener('click', (e) => dispatch('click', 'data-action', e), true);
+  root.addEventListener('change', (e) => dispatch('change', 'data-change', e, valueOf), true);
+  root.addEventListener('input', (e) => dispatch('input', 'data-input', e, valueOf), true);
   // Enter on a field or control runs the click action it names in data-enter.
   root.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     const el = find(e.target, 'data-enter');
     if (!el || isDisabled(el)) return;
     invoke('click', el.getAttribute('data-enter'), el, [el.getAttribute('data-arg'), el, e]);
-  });
+  }, true);
 }
 
 // The value a control holds, across plain inputs and Spectrum widgets.

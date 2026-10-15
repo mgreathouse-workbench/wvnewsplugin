@@ -82,7 +82,9 @@ async function change(page, name, value, arg) {
     const el = document.querySelector(`[data-change="${n}"]${a != null ? `[data-arg="${a}"]` : ''}`);
     if (!el) throw new Error(`no control ${n}`);
     if (typeof v === 'boolean') el.checked = v; else el.value = v;
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+    // Not bubbling, on purpose: the panel must not depend on a Spectrum
+    // widget's change event bubbling (it listens in the capture phase).
+    el.dispatchEvent(new Event('change', { bubbles: false }));
   }, name, value, arg ?? null);
   await idle(page);
 }
@@ -91,7 +93,7 @@ async function type(page, name, value, arg) {
     const el = document.querySelector(`[data-input="${n}"]${a != null ? `[data-arg="${a}"]` : ''}`);
     if (!el) throw new Error(`no field ${n}`);
     el.value = v;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: false }));
   }, name, value, arg ?? null);
 }
 // Enter on whatever carries data-enter="<action>".
@@ -99,7 +101,7 @@ async function enter(page, action) {
   await page.evaluate((a) => {
     const el = document.querySelector(`[data-enter="${a}"]`);
     if (!el) throw new Error(`nothing takes Enter for ${a}`);
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: false }));
   }, action);
   await idle(page);
 }
@@ -371,6 +373,58 @@ await scenario('colours follow the theme InDesign reports, with no host variable
       `${theme} ${JSON.stringify(query)}: data-ui=${got.ui}, text ${got.color}; wanted ${ui}, ${color}`);
   }
   return { errors };
+});
+
+// What is wrong with the frame right now, measured: rows of the frame that
+// collapsed, content drawn over the tabs or under the footer, a tab label
+// spilling out of its tab, list rows squashed below a usable height.
+function frameProblems(page) {
+  return page.evaluate(() => {
+    const box = (sel) => { const e = document.querySelector(sel); return e ? e.getBoundingClientRect() : null; };
+    const out = [];
+    const ctx = box('.ctx');
+    const tabs = box('.tabs');
+    const content = box('.content');
+    const below = box('.status') || box('.foot');
+    if (ctx && ctx.height < 44) out.push(`the edition bar is ${Math.round(ctx.height)}px tall`);
+    if (tabs && tabs.height < 30) out.push(`the tab bar is ${Math.round(tabs.height)}px tall`);
+    if (tabs && content && content.top < tabs.bottom - 0.5) out.push('the content starts above the bottom of the tabs');
+    if (below && content && content.bottom > below.top + 0.5) out.push('the content runs under the status bar or footer');
+    for (const t of document.querySelectorAll('.tab')) {
+      if (t.scrollWidth > t.clientWidth + 1 || t.scrollHeight > t.clientHeight + 1) out.push(`the ${t.textContent.trim()} tab's label spills out`);
+    }
+    for (const r of document.querySelectorAll('.content .row')) {
+      if (r.getBoundingClientRect().height < 30) { out.push(`a row is ${Math.round(r.getBoundingClientRect().height)}px tall`); break; }
+    }
+    for (const h of document.querySelectorAll('.content .section-head')) {
+      if (h.getBoundingClientRect().height < 24) { out.push('a section heading is squashed'); break; }
+    }
+    return out;
+  });
+}
+
+await scenario('the frame keeps its shape on every tab at the smallest panel size', async () => {
+  // The manifest's minimum, with long lists — the case where UXP shrank the
+  // tab bar to a sliver and drew the budget over it (2026-10-15).
+  const c = await open({ width: 320, height: 400, persist: EDITION });
+  // Fail at the first broken screen: with the content over the tabs, the next
+  // click would land on the content and fail for a less useful reason.
+  const check = async (where) => {
+    const bad = await frameProblems(c.page);
+    expect(!bad.length, `${where}: ${bad.join('; ')}`);
+  };
+  for (const v of ['pages', 'budget', 'marketplace', 'setup']) {
+    await click(c.page, 'setView', v);
+    await check(v);
+  }
+  await click(c.page, 'setView', 'pages');
+  await click(c.page, 'openPage', 'A6');               // a checked-out page and a status message
+  await check('pages, holding A6');
+  await click(c.page, 'setView', 'budget');
+  await click(c.page, 'openStory', 'TESTED-story-01');
+  await check('a story');
+  await shot(c.page, 'small-panel-story');
+  return c;
 });
 
 await scenario('a click lands even when a background repaint arrives mid-click', async () => {

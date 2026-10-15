@@ -147,7 +147,7 @@ function createBudgetView({ html, cx, fmt, ui }) {
         title: 'Jump',
         body: pending ? html`<div class="stack">
             <div class="callout callout--info"><div class="callout-text">
-              <strong>${pending.slug}</strong> captured from ${pending.sourcePage}: ${pending.overflowChars.toLocaleString()} characters waiting.
+              <b>${pending.slug}</b> captured from ${pending.sourcePage}: ${pending.overflowChars.toLocaleString()} characters waiting.
               Open the destination page, select its body frame, then drop.
             </div></div>
             <div class="button-row">
