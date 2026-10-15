@@ -2375,6 +2375,43 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   const placePoint = (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y))
     ? [anchor.x, anchor.y]
     : undefined;
+  // ── Work in POINTS for the whole place-and-shift ──────────────────
+  //
+  // The anchor comes from position.bounds_pts. The name is the spec: POINTS.
+  // page.place() reads its place point in the document's CURRENT ruler units,
+  // and these newspaper templates are inches-native — so a y of 1469pt was
+  // read as 1469 INCHES and InDesign refused the whole placement:
+  //
+  //   page.place threw: This value would cause one or more objects to
+  //   leave the pasteboard.
+  //
+  // The shift below has the same mismatch, comparing anchor points against
+  // geometricBounds in document units. It never showed because nothing
+  // reached it while the content was going to the cursor.
+  //
+  // Switching the document to points makes the place point, geometricBounds
+  // and the anchor one coordinate space. Restored on every exit — the
+  // operator's ruler units are theirs, not ours.
+  const vp = (() => { try { return doc.viewPreferences; } catch { return null; } })();
+  let restoreUnits = null;
+  if (vp) {
+    try {
+      const oH = vp.horizontalMeasurementUnits;
+      const oV = vp.verticalMeasurementUnits;
+      vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+      vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+      restoreUnits = () => {
+        try { vp.horizontalMeasurementUnits = oH; vp.verticalMeasurementUnits = oV; } catch {}
+      };
+      console.log('[wvnews-print] measurement units -> POINTS for placement');
+    } catch (e) {
+      // Place anyway; an anchor in the wrong space is better than no attempt,
+      // and the error above names what went wrong if it fails.
+      console.warn('[wvnews-print] could not set POINTS units:', e?.message || e);
+    }
+  }
+  const doneWithUnits = () => { if (restoreUnits) { restoreUnits(); restoreUnits = null; } };
+
   // Clear anything a previous attempt left on the cursor, so this block is
   // not appended behind someone else's leftovers.
   abortPlaceGun();
@@ -2395,6 +2432,7 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   } catch (e) {
     console.error('[wvnews-print] page.place threw:', e?.message || e);
     abortPlaceGun();
+    doneWithUnits();
     throw e;
   }
 
@@ -2422,6 +2460,7 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
     // threw away the very items that had just landed, which read exactly like
     // the bug it was meant to fix: nothing placed.
     abortPlaceGun();
+    doneWithUnits();
     console.warn('[wvnews-print] place() did not add items within 2s — skipping bind for', story.id);
     return { placed: [], framesBound: [] };
   }
@@ -2499,6 +2538,9 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
       }
     }
   }
+  // Geometry is settled; give the operator their ruler units back before the
+  // binding work, which does not care what they are.
+  doneWithUnits();
 
   // Walk every new text frame; if its contents matches a known
   // placeholder, replace it.
