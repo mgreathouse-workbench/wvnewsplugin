@@ -234,6 +234,28 @@ async function init() {
     await loadSites();
   }
   render();
+
+  // RESUME the heartbeat for pages still held.
+  //
+  // state.checkouts is restored from the global so a panel reload does not
+  // lose what you have open — but startHeartbeat() was called from exactly
+  // one place, inside onCheckoutPage. So a reload left held pages with no
+  // heartbeat: their locks quietly ran down to expiry, and after #30 the
+  // close sweep stopped too, which is why a page closed after a reload was
+  // never checked in.
+  //
+  // (Mike 2026-10-15: "A6 did not check in." A6 was held across a reload,
+  // its saved file sat on disk at 2707456 bytes, and nothing was watching
+  // for it.)
+  //
+  // Reloads are not rare here — every plugin update is one.
+  if (heldPages().length) {
+    console.log(`[wvnews-print] resuming heartbeat for ${heldPages().length} held page(s)`);
+    startHeartbeat();
+    // Do not wait up to ten seconds for the first tick: a page closed before
+    // the reload is already waiting to go up.
+    sweepClosedPages().catch(() => {});
+  }
 }
 
 async function loadSites() {
