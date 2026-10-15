@@ -243,9 +243,38 @@ init().catch(err => {
 // ── Render dispatch ─────────────────────────────────────────────────
 
 function render() {
-  renderHeader();
-  if (!state.user) renderSignIn();
-  else renderMain();
+  try {
+    renderHeader();
+    if (!state.user) renderSignIn();
+    else renderMain();
+  } catch (err) {
+    // A throw in here used to freeze the panel.
+    //
+    // render() replaces main().innerHTML. If it throws before doing so, the
+    // DOM keeps whatever was painted last — and the last paint before a load
+    // finishes is the spinner, so the panel sat on "Loading editions…"
+    // forever with nothing logged and nothing on screen to copy. The state
+    // behind it was fine; only the repaint was broken, which is why none of
+    // the loading flags explained it. (Mike 2026-10-15, stuck going from
+    // Budget back to Editions.)
+    //
+    // Deliberately built from plain string concatenation with no helpers:
+    // whatever just failed might be the helper, and a second throw in the
+    // handler would put us right back to a silent freeze.
+    const msg = (err && (err.stack || err.message)) || String(err);
+    try {
+      main().innerHTML = '<div class="alert alert-error" style="white-space:pre-wrap;">'
+        + 'The panel failed to draw. This is a bug in the plugin, not in your edition — '
+        + 'nothing on the website has changed.<br><br>'
+        + 'Switch tabs to try again, or reload the plugin. Copy the text below when reporting it.'
+        + '</div>'
+        + '<textarea class="alert alert-error" readonly rows="10" '
+        + 'style="width:100%;resize:vertical;font-family:monospace;font-size:10px;">'
+        + String(msg).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+        + '</textarea>';
+    } catch { /* the DOM itself is gone; the console line below is all we have */ }
+    console.error('[wvnews-print] render failed:', err);
+  }
 }
 
 function renderHeader() {
