@@ -1,22 +1,44 @@
 // scripts/build-plugin-ccx.js
 //
-// Bundles plugin/wvnews-print/ into a .ccx for sideloading via Adobe
-// UXP Developer Tool. A `.ccx` is just a zip archive with a specific
-// internal layout (manifest.json at root, plus plugin assets).
+// Bundles plugin/wvnews-print/ into a .ccx — the DISTRIBUTION format, for
+// Adobe Exchange and Creative Cloud. A `.ccx` is a zip archive with a
+// specific internal layout (manifest.json at root, plus plugin assets).
 //
 // Usage:
 //   node scripts/build-plugin-ccx.js [outdir]
 //
 // Output:
 //   dist/wvnews-print-<version>.ccx
-//   dist/wvnews-print-<version>.zip   (same contents — UXP Dev Tool
-//                                       can import either)
+//   dist/wvnews-print-<version>.zip   (identical bytes, different extension)
 //
-// Note on signing: Adobe-distributed plugins (sold/free on Adobe
-// Exchange) must be signed via Adobe's signing pipeline. Sideloading
-// in UXP Developer Tool does NOT require signing — UXP Developer
-// Tool can take this unsigned .ccx and sign it for you on the way to
-// Exchange, or you can install it for in-house use as-is.
+// ── A .ccx IS NOT HOW YOU SIDELOAD ──────────────────────────────────
+//
+// This header used to say "for sideloading via Adobe UXP Developer Tool",
+// and the Next steps below told you to drop the .ccx onto UXP. Both were
+// wrong, and cost an afternoon. (2026-10-14.)
+//
+// UXP does not open a .ccx. It BUILDS one — every reference to .ccx inside
+// the app is in its packaging code, it declares no document types, and macOS
+// registers no handler for the extension, so double-clicking does nothing.
+// Adobe's Unified Plugin Installer Agent, which would install one, is not
+// part of a normal install.
+//
+// To put this plugin on a machine:
+//
+//   SIDELOAD (what everyone here does)
+//     Copy plugin/wvnews-print/ to the machine, then in UXP:
+//       Add Plugin -> select manifest.json -> Load
+//     No signing, no packaging, no .ccx. The folder is self-contained —
+//     the generated modules and assets/ are all inside it — and Reload
+//     picks up a `git pull` with no further ceremony.
+//
+//   DISTRIBUTE (not done yet)
+//     A .ccx for Adobe Exchange or Creative Cloud must be SIGNED through
+//     Adobe's pipeline first. Unsigned, as this one is, there is no
+//     supported way to install it. Build it here, sign it there.
+//
+// So this script is for the day the plugin goes to Exchange. It is not the
+// way to get it onto a layout artist's Mac this afternoon.
 
 const fs = require('fs');
 const path = require('path');
@@ -234,9 +256,13 @@ const sizeKb = (ccxSize / 1024).toFixed(1);
 console.log(`✓ Wrote ${path.relative(repoRoot, ccxOut)} (${sizeKb} KB)`);
 console.log(`✓ Wrote ${path.relative(repoRoot, zipOut)} (${sizeKb} KB)`);
 console.log('');
-console.log('Next steps:');
-console.log('  Sideload: drop the .ccx into Adobe UXP Developer Tool → Add Plugin');
-console.log('  Distribute: re-package with UXP Developer Tool to add Adobe signature');
+console.log('This is the DISTRIBUTION package, for Adobe Exchange / Creative Cloud.');
+console.log('It must be signed through Adobe before it can be installed anywhere.');
+console.log('');
+console.log('UXP does not open a .ccx — it builds one. To put the plugin on a machine:');
+console.log('  copy plugin/wvnews-print/ there, then in UXP:');
+console.log('    Add Plugin → select manifest.json → Load');
+console.log('  No signing and no .ccx needed; the folder is self-contained.');
 
 function which(cmd) {
   try {

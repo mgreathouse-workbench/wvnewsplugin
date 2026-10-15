@@ -133,11 +133,11 @@ Tokens are persisted in the OS keychain via UXP's `secureStorage`. They survive 
 ## Package for distribution
 
 ```bash
-npm run plugin:pack
+npm run build
 # → dist/wvnews-print-<version>.ccx
 ```
 
-The script zips `manifest.json` + `index.html` + all root JS files + `icons/` into a `.ccx` (just a zip with that extension). UXP Developer Tool sideloads it directly. For wider Adobe Exchange distribution, re-package through UXP Developer Tool to add Adobe's signature.
+The script zips this folder into a `.ccx`, the package for Adobe Exchange and Creative Cloud, which Adobe must sign before it can be installed anywhere. **A `.ccx` is not how you sideload — UXP builds one, it does not open one.** To install on a machine, load `manifest.json` as in step 3 above; see the repo root README.
 
 ## Production cutover (TODO)
 
