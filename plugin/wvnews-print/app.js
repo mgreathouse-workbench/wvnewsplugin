@@ -81,7 +81,7 @@ const {
   activeDocument, activePageLabel,
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
-  openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
+  openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, readPageBytes, closePageDoc,
   closeOpenPageDoc, activeDocIsPage,
 } = require('./indesign.js');
 const { isColorPage } = require('./color-placement.js');
@@ -1753,26 +1753,45 @@ async function onCheckinPage(folio, note = '') {
     // it would read whichever window happens to be in front and upload it as
     // THIS folio — checking A4's layout in as A9, overwriting a page nobody
     // touched. Refusing is the only safe answer.
+    // The document does not have to still be open.
+    //
+    // Closing and saving a page before checking it in is the natural thing to
+    // do, and it used to mean the check-in refused and uploaded nothing — the
+    // work sat in the temp file while the website kept the old version.
+    //
+    // Open: save it, then read it. Closed: read the file the operator already
+    // saved. Reading the FOLIO'S OWN temp path is unambiguous — it is that
+    // page's file and no other — which is exactly what the old
+    // activeDocument() fallback was not, and why that one was removed.
     const doc = findOpenDocByTempPath(co.tempPath);
-    if (!doc) {
-      // Tagged so the catch can clear the record. Without that, a checkout
-      // whose document is gone is permanent: the row keeps offering Check in
-      // because state.checkouts still has the page, and every click lands
-      // here. Nothing in the panel could clear it and nothing expired it.
-      const e = new Error(`${co.folio} is no longer open in InDesign, so nothing was uploaded. `
-        + `Its check-out has been cleared — use Check out to open it again.`);
-      e.code = 'DOC_NOT_OPEN';
-      throw e;
+    let bytes;
+    let fromDisk = false;
+    if (doc) {
+      bytes = await saveAndReadPageBytes({ doc, fileName: co.fileName });
+    } else {
+      try {
+        bytes = await readPageBytes(co.fileName);
+        fromDisk = true;
+      } catch {
+        // Nothing open AND nothing on disk: there is genuinely nothing to
+        // upload. Tagged so the catch clears the record, or the row keeps
+        // offering a Check in that can only land here again.
+        const e = new Error(`${co.folio} is not open and no saved file was found, `
+          + `so nothing was uploaded. Its check-out has been cleared — `
+          + `use Check out to open it again.`);
+        e.code = 'DOC_NOT_OPEN';
+        throw e;
+      }
     }
-    const bytes = await saveAndReadPageBytes({ doc, fileName: co.fileName });
     const result = await checkinPage({
       editionId: co.editionId, folio: co.folio, bytes, note,
     });
     state.editionPages = { ...state.editionPages, [co.folio]: result.page };
-    await closePageDoc(doc);
+    await closePageDoc(doc);   // no-op when it was already closed
     dropCheckout(co.editionId, co.folio);
     const left = heldFor(co.editionId).length;
-    state.info = `${co.folio} checked in as v${result.page.currentVersion}.`
+    state.info = `${co.folio} checked in as v${result.page.currentVersion}`
+      + `${fromDisk ? ' (from the file you saved — it was already closed)' : ''}.`
       + (left ? ` Still holding ${left}: ${heldFor(co.editionId).map(c => c.folio).join(', ')}.` : '');
   } catch (err) {
     if (err.statusCode === 423) {
