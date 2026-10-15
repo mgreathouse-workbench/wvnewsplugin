@@ -82,6 +82,7 @@ const {
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
+  closeOpenPageDoc,
 } = require('./indesign.js');
 const { isColorPage } = require('./color-placement.js');
 
@@ -341,8 +342,8 @@ function renderMain() {
         ? '<button class="secondary" id="btn-reload-sites">Reload pubs</button>' : ''}
       <button class="ghost" id="btn-signout">Sign out</button>
     </div>
-    ${state.error  ? `<div class="alert alert-error">${state.error}</div>`   : ''}
-    ${state.info   ? `<div class="alert alert-info">${state.info}</div>`     : ''}
+    ${state.error  ? alertBlock('error', state.error) : ''}
+    ${state.info   ? alertBlock('info', state.info)   : ''}
     ${state.busy   ? `<div class="empty"><span class="spinner"></span> Working…</div>` : ''}
 
     <div class="row" style="margin:6px 0 8px;border-bottom:1px solid #d4d4d4;">
@@ -1455,6 +1456,25 @@ async function refreshEditionPages(editionId) {
 const coKey = (editionId, folio) => `${editionId}::${folio}`;
 const heldPages = () => Object.values(state.checkouts || {});
 const heldFor = (editionId) => heldPages().filter(c => c.editionId === editionId);
+// An alert you can get the text OUT of.
+//
+// These were plain divs. UXP does not let you select text in a div, so a
+// build failure — the one message somebody actually needs to send on — could
+// only be retyped or screenshotted. (Mike 2026-10-15, having to screenshot
+// "Cannot save to the file ... because it is already open".)
+//
+// A readonly textarea is selectable with click → Cmd-A → Cmd-C, needs no
+// clipboard permission in the manifest, and does not depend on a clipboard
+// API whose availability varies by UXP version. It keeps the alert's colours
+// so it still reads as an error rather than as an input.
+function alertBlock(kind, text) {
+  const t = String(text == null ? '' : text);
+  const rows = Math.min(12, Math.max(2, t.split('\n').length));
+  return `<textarea class="alert alert-${kind}" readonly rows="${rows}"`
+    + ` title="Click, then Cmd-A and Cmd-C to copy"`
+    + ` style="width:100%;resize:vertical;font-family:inherit;">${escapeHtml(t)}</textarea>`;
+}
+
 const isHeld = (editionId, folio) => !!(state.checkouts || {})[coKey(editionId, folio)];
 function setCheckout(co) {
   state.checkouts = { ...state.checkouts, [coKey(co.editionId, co.folio)]: co };
@@ -1677,6 +1697,17 @@ async function onBuildOnePage(folio) {
     const page = (pub.pages || []).find(p => p.folio === folio);
     if (!page) throw new Error(`${folio} is not a page of this edition.`);
 
+    // Close the page if it is still open from an earlier check-out. The build
+    // saves to that same temp path and InDesign refuses — "Cannot save to the
+    // file ... because it is already open" — so this has to happen BEFORE the
+    // build, not after it.
+    const shut = closeOpenPageDoc(pub.id, folio);
+    if (shut.found > shut.closed) {
+      throw new Error(`${folio} is open in InDesign and would not close, so the rebuild `
+        + 'would fail on save. Close it WITHOUT saving and try again — it holds the '
+        + 'layout from before the rebuild.');
+    }
+
     // buildEditionPages takes an edition and builds every page in it, so hand
     // it an edition of one. Everything else — template, style map, the fresh
     // ad plan it fetches for itself — is unchanged.
@@ -1771,6 +1802,19 @@ async function onBuildEdition() {
   state.busy = true; state.error = ''; state.info = ''; state.buildProgress = ''; render();
   const PHASE = { checkout: 'locking page', create: 'opening template', download: 'downloading snippet', place: 'placing', save: 'checking in' };
   try {
+    // Same as the single-page rebuild: a page still open from an earlier
+    // check-out blocks the build's save on that folio. Clear them all first
+    // rather than failing partway through 38 pages.
+    const stuck = [];
+    for (const pg of pub.pages) {
+      const shut = closeOpenPageDoc(pub.id, pg.folio);
+      if (shut.found > shut.closed) stuck.push(pg.folio);
+    }
+    if (stuck.length) {
+      throw new Error(`These pages are open in InDesign and would not close, so the build `
+        + `would fail on save: ${stuck.join(', ')}. Close them WITHOUT saving and try again.`);
+    }
+
     const result = await buildEditionPages(pub, state.snippetsById, (p) => {
       state.buildProgress = `[${p.index + 1}/${p.total}] ${p.folio} — ${PHASE[p.phase] || p.phase}…`;
       render();
