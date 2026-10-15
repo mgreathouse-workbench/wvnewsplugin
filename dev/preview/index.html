@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>WVNews Print — preview</title>
+  <!-- What InDesign draws behind a panel: the theme's background. -->
+  <link rel="stylesheet" href="/dev/preview/host-themes.css" />
+  <!-- The panel's real stylesheet is injected here by harness.js, with its
+       prefers-color-scheme queries resolved for the chosen InDesign theme. -->
+  <style id="panel-styles"></style>
+  <!-- Approximations of the Spectrum UXP widgets, which only exist inside UXP. -->
+  <link rel="stylesheet" href="/dev/preview/spectrum-shim.css" />
+  <!-- UXP's flex layout, where it differs from Chrome's. -->
+  <link rel="stylesheet" href="/dev/preview/uxp-layout.css" />
+</head>
+<body>
+  <div id="root"></div>
+  <script src="/dev/preview/fixtures.js"></script>
+  <script src="/dev/preview/harness.js"></script>
+</body>
+</html>

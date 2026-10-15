@@ -9,19 +9,39 @@ For a complete progress + status snapshot of where this build is, see [PRINT-LAY
 ```
 plugin/wvnews-print/
 ├── manifest.json        # UXP manifest v5, host "ID", min v18
-├── index.html           # Panel root document
+├── index.html           # Panel root document: <div id="root"> and app.js
 ├── icons/               # 48px + 96px light + dark icons (placeholder art)
-├── app.js               # UI controller (vanilla DOM, CommonJS)
+├── app.js               # Composition root — wires everything below, nothing else
+├── ui/                  # The panel's machinery
+│   ├── html.js          #   tagged template that escapes every value by default
+│   ├── store.js         #   one state object; set() is the only way to change it
+│   ├── renderer.js      #   batched paints that never land mid-click, keep scroll
+│   ├── actions.js       #   run(): every user action, its busy state and outcome
+│   ├── events.js        #   one delegated listener per event type (data-action=…)
+│   ├── theme.js         #   colour-theme fallback (InDesign has no host colours)
+│   └── format.js        #   dates, folio order, plurals
+├── features/            # What each tab does: session, editions, pages, budget,
+│                        #   marketplace, navigation
+├── views/               # What each tab looks like: pure functions of state
 ├── auth.js              # PKCE OAuth — pure-JS SHA-256 (UXP 8 has no crypto.subtle)
 ├── api.js               # /api/print/* + /api/plugin/oauth/* fetch wrappers
-├── indesign.js          # DOM helpers — placement, flow, photo
+├── indesign.js          # The InDesign DOM — placement, flow, build, documents
 ├── config.js            # SERVER_BASE + client_id
 ├── storage.js           # Tokens via UXP secureStorage / localStorage fallback
-├── styles.css           # Minimal Spectrum-ish CSS, light/dark aware
+├── styles.css           # Theme-aware styles for all four InDesign colour themes
 └── README.md            # This file
 ```
 
 **No bundler, no `npm install` in the plugin folder.** Plain CommonJS, loaded by UXP directly.
+
+Only `app.js` requires local modules. Everything in `ui/`, `features/` and
+`views/` receives what it needs as arguments, because UXP resolves `require()`
+relative to `index.html` rather than to the requiring file (see quirks below);
+`tests/structure.test.js` enforces it. The header of `app.js` lists the five
+rules that keep the panel from freezing, each the answer to a bug that shipped.
+
+The panel can run outside InDesign: `npm run preview` and `npm run test:ui`
+at the repo root load this folder unchanged in Chrome against fakes.
 
 ## Architecture
 
@@ -104,20 +124,20 @@ The panel reloads automatically when you edit any file. No build step.
 
 ### 4. Sign in
 
-1. Click **Open sign-in page** in the panel header
+1. Click **Open Sign-In Page**
 2. Your default browser opens with a one-time code on a styled page
-3. Copy the code, paste into the panel, click **Finish sign in**
+3. Copy the code, paste it into the panel, click **Sign In**
 
 Tokens are persisted in the OS keychain via UXP's `secureStorage`. They survive InDesign restarts. **Sign out** in the panel clears them.
 
 ## Package for distribution
 
 ```bash
-npm run plugin:pack
+npm run build
 # → dist/wvnews-print-<version>.ccx
 ```
 
-The script zips `manifest.json` + `index.html` + all root JS files + `icons/` into a `.ccx` (just a zip with that extension). UXP Developer Tool sideloads it directly. For wider Adobe Exchange distribution, re-package through UXP Developer Tool to add Adobe's signature.
+The script zips this folder into a `.ccx`, the package for Adobe Exchange and Creative Cloud, which Adobe must sign before it can be installed anywhere. **A `.ccx` is not how you sideload — UXP builds one, it does not open one.** To install on a machine, load `manifest.json` as in step 3 above; see the repo root README.
 
 ## Production cutover (TODO)
 
@@ -140,7 +160,8 @@ When you're done testing in demo mode:
 - Plugin needs the `launchProcess` permission to call `shell.openExternal` (for the OAuth browser leg)
 - `crypto.subtle` is **not** a global — the plugin includes a pure-JS SHA-256
 - `TextEncoder` / `TextDecoder` are **not** globals — the plugin polyfills them at the top of `app.js`
-- `require()` resolves relative to `index.html`, not the requiring file — that's why the folder is flat
+- `require()` resolves relative to `index.html`, not the requiring file — that's why only `app.js` requires local modules
+- InDesign does not set the `--uxp-host-*` theme variables other hosts provide; theme with `@media (prefers-color-scheme: darkest | dark | light | lightest)` instead (InDesign 2026 reports Light as `light`)
 - Network domains in `requiredPermissions.network.domains` are enforced **after** HTTP redirects — list both pre- and post-redirect hosts if applicable
 - UXP Developer Tool's per-row **Debug** action opens DevTools for the panel; the top-level "Debug Script" button is for legacy `.idjs` files only
 

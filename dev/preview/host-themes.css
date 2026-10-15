@@ -1,0 +1,15 @@
+/* What InDesign gives a UXP panel: its background, drawn behind the panel,
+   and the interface font. Nothing else — InDesign sets none of the
+   --uxp-host-* colour variables other Adobe apps provide, so the preview
+   sets none either, and the panel has to theme itself the way it must inside
+   InDesign: with prefers-color-scheme, which harness.js emulates for the
+   chosen theme. Backgrounds are InDesign's four Colour Theme settings. */
+
+html {
+  font-family: "Adobe Clean", -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+html[data-theme="dark"] { background: #323232; }
+html[data-theme="mediumdark"] { background: #535353; }
+html[data-theme="mediumlight"] { background: #b8b8b8; }
+html[data-theme="light"] { background: #f0f0f0; }

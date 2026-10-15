@@ -72,7 +72,7 @@ plugin/wvnews-print/  --(node scripts/build-plugin-ccx.js)-->  dist/wvnews-print
 1. **Grant `printlayout` to the pilot designer's account** — the plugin checks `hasPermission(profile,'printlayout')`. Gotcha: accounts with an explicit `permissions` array don't pick up role-default grants — add the module directly in `/admin/users` (or re-select the role).
 2. **Snippet frame labels** — designers must add `obituary-body` and `legal-body` (and ensure `classified-body`) to the relevant snippets, or those kinds silently don't place.
 3. **Real-Firestore smoke test** on staging (create edition → publish a classified to print → Sync from budget → Build Pages → confirm check-in).
-4. **Distribute the `.ccx`** (sideload / upload on Print Layout → Plugin Releases). **Production cutover later:** rebuild the `.ccx` against `wvnews.com`.
+4. **Install the plugin on the pilot machines** — copy `plugin/wvnews-print/` across (the build's `.zip` is that folder, zipped) and, in UXP, Add Plugin → `manifest.json` → Load. A `.ccx` cannot be sideloaded; it must be Adobe-signed before anything will install it, so the platform's Plugin Releases page and install guide, which assume one, need the same correction (2026-10-15). **Production cutover later:** build with `PLUGIN_SERVER_BASE=https://wvnews.com` and install from that build's `.zip`.
 
 ---
 
@@ -176,7 +176,7 @@ Key files: `src/lib/classifieds-db.js` (createClassifiedFromIntake), `src/lib/le
 cd ~/Downloads/wvnewsplugin && git pull          # latest plugin source
 # edit plugin/wvnews-print/*.js
 PLUGIN_SERVER_BASE=https://staging.wvnews.com node scripts/build-plugin-ccx.js
-# sideload dist/wvnews-print-0.1.0.ccx in UXP Developer Tool
+# in UXP: Add Plugin → plugin/wvnews-print/manifest.json → Load (Reload after edits)
 git add -A && git commit -m "..." && git push     # back to your GitHub
 # if it should ship to the platform too: PR/patch into bjarvis-lab/wvnews-platform
 ```

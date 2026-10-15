@@ -42,6 +42,16 @@ function host() {
   return ID;
 }
 
+// The class of an InDesign DOM object: "TextFrame", "Group", "Page"…
+// UXP does not expose constructor.name reliably; String(obj) is
+// "[object ClassName]".
+function classOf(it) {
+  try {
+    const m = /^\[object\s+([A-Za-z]+)\]/.exec(String(it));
+    return m ? m[1] : '';
+  } catch { return ''; }
+}
+
 function fs() {
   if (!UXP_FS) {
     const { storage } = require('uxp');
@@ -241,6 +251,7 @@ async function flowIntoSelectedFrame(story, styleMap, kind = 'body') {
           console.log('[wvnews-print] selection length:', sel?.length, 'type:', sel?.[0]?.constructor?.name);
           if (!sel || !sel.length) throw new Error('Select a frame first.');
           const frame = sel[0];
+          if (groupedStoryMessage(frame, 'frame')) throw new Error(groupedStoryMessage(frame, 'frame'));
           console.log('[wvnews-print] frame has parentStory:', !!frame.parentStory);
           const val = valueForBind(story, kind);
           console.log('[wvnews-print] value length:', val ? val.length : 0);
@@ -1122,6 +1133,7 @@ async function placePhotoInSelection(photo, story) {
           const sel = id.app.selection;
           if (!sel || !sel.length) throw new Error('Select an image frame first.');
           const frame = sel[0];
+          if (groupedStoryMessage(frame, 'image frame')) throw new Error(groupedStoryMessage(frame, 'image frame'));
           const buf = await fetchBinary(photo.url);
           const ext = (photo.url.split('?')[0].split('.').pop() || 'jpg').slice(0, 4);
           const tempPath = await writeTemp(`${story.id}-photo.${ext}`, buf);
@@ -1622,7 +1634,8 @@ async function captureSourceForJump(slug, styleMap) {
         try {
           const sel = id.app.selection;
           if (!sel || !sel.length) { restoreUnits(); throw new Error('Select the overflowing source frame first.'); }
-          const source = sel[0];
+          const source = frameToJumpFrom(sel[0]);
+          if (!source) { restoreUnits(); throw new Error('Nothing in that story overflows, so there is no jump to capture.'); }
           if (!source.parentStory) { restoreUnits(); throw new Error('Selection is not a text frame.'); }
 
           const sourcePage = (() => {
@@ -1821,6 +1834,7 @@ async function completeJumpToFrame(pending, styleMap) {
           const sel = id.app.selection;
           if (!sel || !sel.length) { restoreUnits(); throw new Error('Select an empty destination frame first.'); }
           const dest = sel[0];
+          if (groupedStoryMessage(dest, 'destination frame')) { restoreUnits(); throw new Error(groupedStoryMessage(dest, 'destination frame')); }
           if (!dest.parentStory) { restoreUnits(); throw new Error('Selection is not a text frame.'); }
 
           const destPage = (() => {
@@ -2234,6 +2248,8 @@ async function autoPaginatePage(pubProfile, pageRole, stories) {
       const result = await placeAndBindStoryBlock(blockId, p.story, anchor);
       p.placed = true;
       p.framesBound = result.framesBound;
+      p.grouped = !!result.grouped;
+      p.groupNote = result.groupNote || '';
       console.log('[wvnews-print] auto-paginate placed', p.story.id, 'at', p.position.id, 'as', blockId);
     } catch (e) {
       p.placed = false;
@@ -2355,15 +2371,84 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   }
   const baselineSpreadCt = existingSpreadIds.size;
 
-  // Single place call — no doScript wrapping, no NEVER_INTERACT.
-  // The multi-variant probe version (which placed items successfully)
-  // also didn't set NEVER_INTERACT, so we leave it alone here. .idms
-  // snippets don't show import-options dialogs anyway.
+  // Place ONTO THE PAGE, not onto the document.
+  //
+  // doc.place() does not put anything down — it loads the place cursor and
+  // waits for a human to click. Auto-paginate is supposed to be automatic, so
+  // what the operator got was a place gun full of story blocks: click to drop
+  // one, and the block lands unbound while this code has already given up
+  // waiting and moved on. (Mike 2026-10-15: "preset blocks are attached to
+  // the cursor. I place them and they disappear.")
+  //
+  // page.place(file, placePoint) puts the snippet down at a point and returns
+  // the items. Everything below — the id diff, the shift to the anchor, the
+  // frame binding — was written for items that are already on the page, and
+  // never ran while the content was sitting on the cursor.
+  //
+  // The point is the anchor when we have one, so the shift below becomes a
+  // correction rather than a move across the sheet. showingOptions is false:
+  // an import dialog would stall a loop that places many blocks.
+  const placePoint = (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y))
+    ? [anchor.x, anchor.y]
+    : undefined;
+  // ── Work in POINTS for the whole place-and-shift ──────────────────
+  //
+  // The anchor comes from position.bounds_pts. The name is the spec: POINTS.
+  // page.place() reads its place point in the document's CURRENT ruler units,
+  // and these newspaper templates are inches-native — so a y of 1469pt was
+  // read as 1469 INCHES and InDesign refused the whole placement:
+  //
+  //   page.place threw: This value would cause one or more objects to
+  //   leave the pasteboard.
+  //
+  // The shift below has the same mismatch, comparing anchor points against
+  // geometricBounds in document units. It never showed because nothing
+  // reached it while the content was going to the cursor.
+  //
+  // Switching the document to points makes the place point, geometricBounds
+  // and the anchor one coordinate space. Restored on every exit — the
+  // operator's ruler units are theirs, not ours.
+  const vp = (() => { try { return doc.viewPreferences; } catch { return null; } })();
+  let restoreUnits = null;
+  if (vp) {
+    try {
+      const oH = vp.horizontalMeasurementUnits;
+      const oV = vp.verticalMeasurementUnits;
+      vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
+      vp.verticalMeasurementUnits = id.MeasurementUnits.POINTS;
+      restoreUnits = () => {
+        try { vp.horizontalMeasurementUnits = oH; vp.verticalMeasurementUnits = oV; } catch {}
+      };
+      console.log('[wvnews-print] measurement units -> POINTS for placement');
+    } catch (e) {
+      // Place anyway; an anchor in the wrong space is better than no attempt,
+      // and the error above names what went wrong if it fails.
+      console.warn('[wvnews-print] could not set POINTS units:', e?.message || e);
+    }
+  }
+  const doneWithUnits = () => { if (restoreUnits) { restoreUnits(); restoreUnits = null; } };
+
+  // Clear anything a previous attempt left on the cursor, so this block is
+  // not appended behind someone else's leftovers.
+  abortPlaceGun();
+
+  // ONE OR TWO ARGUMENTS. Not four.
+  //
+  // placeTemplate, which works in this build, calls page.place(path) or
+  // page.place(path, point) and nothing else. Passing the full signature with
+  // `undefined` for destinationLayer — page.place(path, point, undefined,
+  // false) — placed nothing at all: the binding rejects the undefined object
+  // parameter rather than treating it as "argument omitted". Mirror the call
+  // that is known to work.
   try {
-    doc.place(snippetPath, true);
-    console.log('[wvnews-print] doc.place(path, true) called');
+    if (placePoint) page.place(snippetPath, placePoint);
+    else page.place(snippetPath);
+    console.log('[wvnews-print] page.place called at',
+      placePoint ? `[${placePoint[0]}, ${placePoint[1]}]` : '(page default)');
   } catch (e) {
-    console.error('[wvnews-print] doc.place threw:', e?.message || e);
+    console.error('[wvnews-print] page.place threw:', e?.message || e);
+    abortPlaceGun();
+    doneWithUnits();
     throw e;
   }
 
@@ -2383,8 +2468,19 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   console.log(`[wvnews-print] post-poll: page ${baselineCt}->${polledPage}, spread ${baselineSpreadCt}->${polledSpread} (waited ${Date.now() - pollStart}ms)`);
 
   if (polledPage <= baselineCt && polledSpread <= baselineSpreadCt) {
-    console.warn('[wvnews-print] place() did not add items within 2s — skipping bind for', story.id);
-    return { placed: [], framesBound: [] };
+    // Nothing landed. If this build loaded the cursor instead of placing,
+    // the block is sitting on it — drop it, or the operator is left holding
+    // content they have to click away and the next place appends behind it.
+    //
+    // ONLY on this branch. Aborting unconditionally after a SUCCESSFUL place
+    // threw away the very items that had just landed, which read exactly like
+    // the bug it was meant to fix: nothing placed.
+    abortPlaceGun();
+    doneWithUnits();
+    // A failure, not an empty success: auto-paginate used to count this story
+    // as placed and report "4 of 4" with one block missing from the page.
+    console.warn('[wvnews-print] place() did not add items within 2s for', story.id);
+    throw new Error(`The ${blockId} block did not land on the page.`);
   }
 
   // Collect new items via id diff — check both page and spread, since
@@ -2414,26 +2510,17 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   scan(spread, existingSpreadIds, 'spread');
   console.log('[wvnews-print] new items found:', newItems.length);
 
-  // Helper to robustly determine the class of an InDesign DOM object.
-  // UXP doesn't expose .constructor.name reliably; obj.toString()
-  // returns "[object ClassName]".
-  const classOf = (it) => {
+  // The block's own items, as opposed to frames nested inside them. Only these
+  // move (a nested child would be shifted twice) and only these are grouped.
+  const topLevel = newItems.filter(item => {
     try {
-      const s = String(it);
-      const m = s.match(/^\[object\s+([A-Za-z]+)\]/);
-      return m ? m[1] : '';
-    } catch { return ''; }
-  };
+      const pc = classOf(item.parent);
+      return pc === 'Page' || pc === 'Spread';
+    } catch { return false; }
+  });
 
-  // Move placed items to the requested anchor. Move only top-level
-  // (page/spread parent); group children would double-shift.
+  // Move placed items to the requested anchor.
   if (anchor && newItems.length > 0) {
-    const topLevel = newItems.filter(item => {
-      try {
-        const pc = classOf(item.parent);
-        return pc === 'Page' || pc === 'Spread';
-      } catch { return false; }
-    });
     console.log('[wvnews-print] top-level placed items:', topLevel.length);
 
     let minTop = Infinity, minLeft = Infinity;
@@ -2460,6 +2547,9 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
       }
     }
   }
+  // Geometry is settled; give the operator their ruler units back before the
+  // binding work, which does not care what they are.
+  doneWithUnits();
 
   // Walk every new text frame; if its contents matches a known
   // placeholder, replace it.
@@ -2508,7 +2598,90 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   }
 
   console.log('[wvnews-print] framesBound:', framesBound);
-  return { placed: newItems, framesBound };
+
+  // Last, once every frame is filled: one story, one group.
+  const grouping = groupStoryBlock(topLevel, newItems, story, spread || page);
+  return { placed: newItems, framesBound, grouped: grouping.grouped, groupNote: grouping.reason || '' };
+}
+
+// Group one placed story's frames, so the story moves, copies and deletes as
+// a unit on the page.
+//
+// A story block is one composition. Its body frame carries no text wrap of its
+// own; it flows around the headline, photo, caption, mug, nameline and byline
+// frames, which each have a bounding-box wrap. Wrap set on items INSIDE a
+// group goes on applying to their siblings — it is wrap set on the group
+// itself that text inside the group ignores — but a story that silently ran
+// under its own photo would be worse than one left ungrouped, so this measures
+// rather than trusts: every text frame's line count and overflow must be the
+// same after grouping as before, or the group is undone.
+//
+//   topLevel   the block's own items (their parent is the page or spread)
+//   allItems   those plus anything nested in them, for the measurement
+//   container  the spread (or page) to make the group on
+//
+// Returns { grouped: true, group } or { grouped: false, reason }.
+function groupStoryBlock(topLevel, allItems, story, container) {
+  if (!topLevel || topLevel.length < 2) {
+    return { grouped: false, reason: topLevel && topLevel.length ? 'the block is a single frame' : 'nothing was placed' };
+  }
+  const before = textComposition(allItems);
+  let group;
+  try {
+    group = container.groups.add(topLevel);
+  } catch (e) {
+    console.warn('[wvnews-print] could not group story block:', e?.message || e);
+    return { grouped: false, reason: `InDesign would not group it (${e?.message || e})` };
+  }
+  const after = textComposition(allItems);
+  const changed = before.some((b, i) => b && after[i] && (b.lines !== after[i].lines || b.overflows !== after[i].overflows));
+  if (changed) {
+    try { group.ungroup(); } catch (e) { console.warn('[wvnews-print] could not undo the group:', e?.message || e); }
+    console.warn('[wvnews-print] grouping changed text composition; left ungrouped:', story && story.id);
+    return { grouped: false, reason: 'grouping changed how its text wraps, so its frames were left as placed' };
+  }
+  // The Layers panel shows the name, so the page reads as a list of stories.
+  const headline = String((story && story.headline) || '').replace(/\s+/g, ' ').trim();
+  try { group.name = `Story: ${headline.length > 60 ? `${headline.slice(0, 59)}…` : headline || story.id}`; } catch { /* cosmetic */ }
+  try { group.insertLabel('wvnews-asset-id', String(story.id)); } catch { /* the frames inside carry it too */ }
+  return { grouped: true, group };
+}
+
+// Lines and overflow of every text frame in a list, in order (null for items
+// that are not text frames or cannot be read). Asking for lines makes InDesign
+// compose the text first.
+function textComposition(items) {
+  return (items || []).map((it) => {
+    if (classOf(it) !== 'TextFrame') return null;
+    try {
+      try { it.parentStory.recompose(); } catch { /* composed on read anyway */ }
+      return { lines: it.lines.length, overflows: !!it.overflows };
+    } catch { return null; }
+  });
+}
+
+// The frame to capture a jump from, given what is selected. A story placed by
+// auto-paginate is a group, and the Selection tool selects the whole group;
+// the frame that matters is the one whose text overflows.
+function frameToJumpFrom(item) {
+  if (classOf(item) !== 'Group') return item;
+  let items = [];
+  try { items = item.allPageItems || []; } catch { return null; }
+  for (let i = 0; i < items.length; i++) {
+    try {
+      if (classOf(items[i]) === 'TextFrame' && items[i].overflows) return items[i];
+    } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+// A tool that fills ONE frame was given a whole grouped story: say how to get
+// at the frame inside, rather than doing nothing — a group has no text, so the
+// text tools used to skip it silently and report success.
+function groupedStoryMessage(item, what) {
+  return classOf(item) === 'Group'
+    ? `That is a grouped story. Double-click it to select the ${what} inside, then try again.`
+    : '';
 }
 
 // For a text frame whose contents matches a known placeholder string,
@@ -5039,6 +5212,88 @@ function cloudPageTempName(editionId, folio) {
   return `wv_${safeEdition}_${safeFolio}.indd`;
 }
 
+// Drop whatever the place cursor is carrying.
+//
+// A loaded place gun is sticky: it survives the call that created it, carries
+// into the next placement, and makes doc.close() throw "User canceled this
+// action." The build already does this before closing a page; placement needs
+// it too, so one stray gun cannot poison the rest of a run.
+function abortPlaceGun() {
+  const id = host();
+  try {
+    const w = id.app.activeWindow;
+    if (w && w.placeGun && w.placeGun.loaded) w.placeGun.abortPlaceGun();
+  } catch { /* no window, or no gun */ }
+  try {
+    if (id.app.placeGun && id.app.placeGun.loaded) id.app.placeGun.abortPlaceGun();
+  } catch { /* older builds expose it only on the window */ }
+}
+
+// Is the FRONT document the one for this folio?
+//
+// autoPaginatePage places into activeDocument(), whatever that happens to be.
+// Nothing checked it was the page the operator clicked, so the failure modes
+// were: no document open at all, which throws a bare "Open a document first",
+// and — worse, because it is silent — another folio in front, which quietly
+// paginates A5's stories onto B1.
+//
+// Returns { ok, expected, actual } so the caller can say which page to open
+// rather than reporting Adobe's wording.
+function activeDocIsPage(editionId, folio) {
+  const expected = cloudPageTempName(editionId, folio);
+  let actual = null;
+  try {
+    const id = host();
+    const doc = id.app.documents.length ? id.app.activeDocument : null;
+    if (doc) actual = String(doc.name || '');
+  } catch { /* no document open */ }
+  const ok = !!actual && (actual === expected || actual.indexOf(expected) !== -1);
+  return { ok, expected, actual };
+}
+
+// Close any document already open at a page's temp path.
+//
+// MUST RUN BEFORE A BUILD. The build saves to wv_<edition>_<folio>.indd, and
+// InDesign refuses with "Cannot save to the file ... because it is already
+// open" if the operator still has that page open from an earlier check-out.
+// The build then fails the page outright:
+//
+//   B1 failed — Cannot save to the file "wv_EXT_101726_B1.indd",
+//   because it is already open.
+//
+// Closing afterwards, which is what the first attempt at this did, is too
+// late — the save has already failed. (Mike 2026-10-15.)
+//
+// Matched BY PATH rather than by what the panel thinks it has checked out:
+// a document left open by a crash, a reload or a previous session is exactly
+// the one that blocks the save, and the panel has no record of it.
+//
+// SaveOptions.NO is deliberate. The build is about to replace this page from
+// the grid, so unsaved changes in the open copy are already superseded —
+// keeping them would put the pre-rebuild layout back.
+function closeOpenPageDoc(editionId, folio) {
+  const id = host();
+  const name = cloudPageTempName(editionId, folio);
+  let found = 0;
+  let closed = 0;
+  try {
+    // Backwards: closing removes an item and shifts the ones after it.
+    for (let i = id.app.documents.length - 1; i >= 0; i--) {
+      let d;
+      try { d = id.app.documents.item(i); } catch { continue; }
+      try {
+        const n = String(d.name || '');
+        const full = String(d.fullName || '');
+        if (n !== name && full.indexOf(name) === -1) continue;
+        found++;
+        try { d.close(id.SaveOptions.NO); closed++; }
+        catch { /* reported to the caller via found > closed */ }
+      } catch { /* unreadable document — skip it */ }
+    }
+  } catch { /* no documents open */ }
+  return { found, closed };
+}
+
 // Download → write to temp → open. `arrayBuffer` is the .indd bytes,
 // `editionId`/`folio` name the temp file. Returns the opened doc
 // reference plus the temp path so heartbeats / check-in know where to
@@ -5061,7 +5316,13 @@ async function openDownloadedPage({ editionId, folio, arrayBuffer }) {
       throw new Error(`Could not open ${folio}.indd: ${e2.message || e1.message}`);
     }
   }
-  return { doc, tempPath, fileName: cloudPageTempName(editionId, folio) };
+  // `bytes` is how long the file is as we just wrote it. The panel keeps it
+  // so a page that is opened, looked at and closed can be told from one that
+  // was actually saved over — the first should not produce a new version.
+  return {
+    doc, tempPath, fileName: cloudPageTempName(editionId, folio),
+    bytes: (arrayBuffer && (arrayBuffer.byteLength ?? arrayBuffer.length)) ?? null,
+  };
 }
 
 // Create a new blank InDesign document and save it to the same temp
@@ -5093,25 +5354,91 @@ async function createBlankPage({ editionId, folio }) {
       throw new Error(`Could not save blank ${folio}: ${e2.message || e1.message}`);
     }
   }
-  return { doc, tempPath, fileName };
+  // No downloaded bytes for a blank page — anything saved over it is new
+  // work by definition, so leave this null and let the sweep upload it.
+  return { doc, tempPath, fileName, bytes: null };
 }
 
-// Find the open document matching a previously-downloaded temp path.
-// Used by check-in / close-without-save flows so we don't blindly
-// operate on whatever the user has frontmost.
+// Find the open document for one checked-out page, by its FILE NAME. Check-in
+// and the close sweep use it so they never act on whatever happens to be in
+// front.
+//
+// This used to have a second test:
+//
+//   if (d.filePath && String(d.filePath).indexOf(<the temp FOLDER>) !== -1) return d;
+//
+// which matches ANY document in the plugin's temp folder — and every page the
+// panel checks out lives in that folder. With A1 open, it reported A6 as "still
+// open", so the close sweep never checked A6 in, and Check In on a closed A6
+// saved, read and then CLOSED A1's window. (Mike 2026-10-15: "A6 did not
+// check in.")
+//
+// The name is the identity: wv_<edition>_<folio>.indd, unique per page, and the
+// same test activeDocIsPage and closeOpenPageDoc already rely on. fullName is
+// kept as an exact-path check for builds where it stringifies to a path.
 function findOpenDocByTempPath(tempPath) {
   if (!tempPath) return null;
+  const want = String(tempPath).split(/[\\/]/).pop();
   const id = host();
   try {
     for (let i = 0; i < id.app.documents.length; i++) {
       const d = id.app.documents.item(i);
       try {
-        if (d.fullName && String(d.fullName).indexOf(tempPath) !== -1) return d;
-        if (d.filePath && String(d.filePath).indexOf(tempPath.replace(/\/[^/]+$/, '')) !== -1) return d;
+        if (String(d.name || '') === want) return d;
+        if (d.fullName && String(d.fullName) === String(tempPath)) return d;
       } catch { /* keep looking */ }
     }
   } catch { /* no docs */ }
   return null;
+}
+
+// Make a checked-out page the front document.
+//
+// Auto-paginate places into the front document, so paginating A5 with A6 in
+// front would either refuse or — before #28 — quietly put A5's stories on A6.
+// Returns true only when the page is verifiably in front afterwards: some
+// InDesign builds refuse the activeDocument assignment, and then the page's
+// layout window is brought forward instead.
+function bringPageToFront(editionId, folio) {
+  const id = host();
+  const name = cloudPageTempName(editionId, folio);
+  let doc = null;
+  try {
+    for (let i = 0; i < id.app.documents.length; i++) {
+      const d = id.app.documents.item(i);
+      try { if (String(d.name || '') === name) { doc = d; break; } } catch { /* skip */ }
+    }
+  } catch { return false; }
+  if (!doc) return false;
+  if (activeDocIsPage(editionId, folio).ok) return true;
+  try { id.app.activeDocument = doc; } catch { /* read-only on some builds */ }
+  if (activeDocIsPage(editionId, folio).ok) return true;
+  try {
+    const w = doc.layoutWindows && doc.layoutWindows.length ? doc.layoutWindows.item(0) : null;
+    if (w && typeof w.bringToFront === 'function') w.bringToFront();
+  } catch { /* fall through to the check */ }
+  return activeDocIsPage(editionId, folio).ok;
+}
+
+// InDesign's interface brightness, 0 (Dark) to 1 (Light), or null when this
+// build does not expose it. The panel's theme fallback reads it (ui/theme.js).
+function uiBrightness() {
+  try {
+    const b = host().app.generalPreferences.uiBrightnessPreference;
+    return typeof b === 'number' ? b : null;
+  } catch { return null; }
+}
+
+// Names of every open document — for the panel to show which pages are open.
+function openDocumentNames() {
+  const out = [];
+  try {
+    const id = host();
+    for (let i = 0; i < id.app.documents.length; i++) {
+      try { out.push(String(id.app.documents.item(i).name || '')); } catch { /* skip */ }
+    }
+  } catch { /* none open */ }
+  return out;
 }
 
 // Save the active document in place (back to the temp path it was opened
@@ -5140,6 +5467,27 @@ async function saveAndReadPageBytes({ doc, fileName }) {
   return await entry.read({ format: require('uxp').storage.formats.binary });
 }
 
+// Read a checked-out page's bytes straight off disk, without a document.
+//
+// Check-in used to require the document to still be OPEN. Close it and save
+// it first — which is what a person does when they have finished with a page
+// — and check-in refused, uploaded nothing, and the work sat in the temp
+// file while the website kept the old version. (Mike 2026-10-15: "I closed
+// it and saved it. Checked it in." A1 stayed at v4.)
+//
+// Reading the folio's own temp path is unambiguous: it is that page's file
+// and no other. That is what made the old activeDocument() fallback unsafe
+// and this safe — the fallback guessed from whatever was in front, this
+// names the file.
+//
+// Throws if there is nothing there, so the caller can tell the difference
+// between "saved and closed" and "never opened".
+async function readPageBytes(fileName) {
+  const folder = await tempFolder();
+  const entry = await folder.getEntry(fileName);   // throws when absent
+  return await entry.read({ format: require('uxp').storage.formats.binary });
+}
+
 async function closePageDoc(doc) {
   if (!doc) return;
   const id = host();
@@ -5160,5 +5508,7 @@ module.exports = {
   activeDocument, activePageLabel,
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
-  openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
+  openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, readPageBytes, closePageDoc,
+  closeOpenPageDoc, abortPlaceGun, activeDocIsPage, bringPageToFront, openDocumentNames,
+  uiBrightness, groupStoryBlock, frameToJumpFrom,
 };

@@ -6,18 +6,9 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div id="root">
-    <header class="header">
-      <div class="title">WVNews Print</div>
-      <div class="user" id="user-chip"></div>
-    </header>
-    <main id="main">
-      <!-- Populated by app.js based on auth state. -->
-    </main>
-    <footer class="footer">
-      <div id="footer-text">v0.1.0</div>
-    </footer>
-  </div>
+  <!-- The whole panel is drawn into #root by app.js. Event listeners live on
+       #root itself, so they survive every repaint. -->
+  <div id="root"></div>
   <script src="./app.js"></script>
 </body>
 </html>

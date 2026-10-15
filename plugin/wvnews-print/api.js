@@ -19,7 +19,13 @@ async function call(path, init = {}) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* keep null */ }
   if (!res.ok) {
-    throw new Error((data && data.error) || `HTTP ${res.status}`);
+    // statusCode travels with the error so callers can tell a lock conflict
+    // (423) or a missing page (404) from a network failure without matching
+    // on message text. Only checkoutPage and checkinPage used to do this.
+    const err = new Error((data && data.error) || `HTTP ${res.status}`);
+    err.statusCode = res.status;
+    if (data && data.lock) err.lock = data.lock;
+    throw err;
   }
   return data;
 }
@@ -283,6 +289,23 @@ async function checkoutPage({ editionId, folio, host }) {
   return data;
 }
 
+// Create or re-plan an edition. The panel's edition form used to build these
+// requests itself with a raw fetch() and its own token handling; they belong
+// here with every other call, so auth and error shape are the same everywhere.
+async function createEdition({ siteId, siteCode, editionDate, sections, pages }) {
+  return await call('/api/print/editions', {
+    method: 'POST',
+    body: JSON.stringify({ siteId, siteCode, editionDate, sections, pages }),
+  });
+}
+
+async function updateEdition(editionId, { sections, pages }) {
+  return await call(`/api/print/editions/${encodeURIComponent(editionId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ sections, pages }),
+  });
+}
+
 async function heartbeatPage({ editionId, folio }) {
   return await call(
     `/api/print/editions/${encodeURIComponent(editionId)}/pages/${encodeURIComponent(folio)}/heartbeat`,
@@ -356,6 +379,7 @@ module.exports = {
   listSnippets, getSnippet, downloadSnippetBinary,
   getPublicationTemplate, downloadPublicationTemplateBinary, fetchStyleMap,
   listEditions, getEdition, getEditionPlan, updateEditionStatus, fetchAssetContent,
+  createEdition, updateEdition,
   listEditionPages, checkoutPage, heartbeatPage, checkinPage, breakPageLock,
   fetchPageBinary, fetchMarketplace, fetchSectionHeaders,
 };

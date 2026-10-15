@@ -9,9 +9,11 @@ The layout-artist plugin for the WV News print-production platform. Artists sign
 ## Layout
 
 ```
-plugin/wvnews-print/      the plugin source (manifest.json, app.js, indesign.js, api.js, auth.js, …)
+plugin/wvnews-print/          the plugin source — see its README for the module map
 scripts/build-plugin-ccx.js   packages the plugin into a .ccx
 scripts/gen-plugin-icons.js   regenerates panel icons
+tests/                        unit tests (node:test, no InDesign needed)
+dev/                          the panel in Chrome: preview server, fakes, smoke tests
 ```
 
 ## Install the plugin on a machine
@@ -22,6 +24,28 @@ That is the whole procedure, on your machine and on anyone else's. No
 packaging and no signing: the folder is self-contained, and **Reload** picks
 up a `git pull`. To put it on a machine without the repo, copy
 `plugin/wvnews-print/` across and load the `manifest.json` there.
+
+## Develop
+
+```bash
+npm install          # dev tools only; the plugin itself has no dependencies
+npm run lint         # ESLint, errors only (lint:all shows warnings too)
+npm test             # unit tests: the InDesign bridge's document lookups, the
+                     # action runner, templating, theming, module rules
+npm run test:ui      # the real panel in headless Chrome against fake InDesign
+                     # and website, driven with real mouse clicks (~1.5 min)
+npm run preview      # the same panel at http://localhost:4747/dev/preview/
+```
+
+`test:ui` needs Google Chrome installed (`CHROME_PATH` overrides the macOS
+default). Add `-- --shots` to write a screenshot of each screen to
+`dev/screenshots/<theme>/`, and set `THEME=dark|mediumdark|mediumlight|light`
+for InDesign's other colour themes.
+
+The preview runs the panel's own code unchanged; only InDesign, the website
+and sign-in are faked (`dev/preview/fixtures.js`). Spectrum widgets are
+approximated in Chrome, so it is right about behaviour and layout and close —
+not exact — about how the widgets look. Check visual changes in InDesign.
 
 ## Build a .ccx
 
@@ -40,7 +64,7 @@ PLUGIN_SERVER_BASE=https://staging.wvnews.com node scripts/build-plugin-ccx.js
 
 - **Build Pages** → opens the template, places the snippet, flows assigned content, and **checks each page in to the website** as a new version (not a local volume).
 - **Marketplace tab** — pull + place classifieds / legals / obits into a selected frame (classifieds grouped by category with text headers).
-- **Editions** — list/create editions, check pages out/in, per-page lock badges, Refresh.
+- **One edition as context, four tabs** — Pages (check out/in, rebuild, automatic check-in when a page's window closes), Budget (auto-paginate per page, story tools), Marketplace (liners and display ads), Setup (editions and their plans).
 - Story jump/continuation, auto-columns, combined caption+credit, per-paragraph styling.
 
 ## Notes
