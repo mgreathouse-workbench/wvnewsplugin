@@ -2355,17 +2355,42 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   }
   const baselineSpreadCt = existingSpreadIds.size;
 
-  // Single place call — no doScript wrapping, no NEVER_INTERACT.
-  // The multi-variant probe version (which placed items successfully)
-  // also didn't set NEVER_INTERACT, so we leave it alone here. .idms
-  // snippets don't show import-options dialogs anyway.
+  // Place ONTO THE PAGE, not onto the document.
+  //
+  // doc.place() does not put anything down — it loads the place cursor and
+  // waits for a human to click. Auto-paginate is supposed to be automatic, so
+  // what the operator got was a place gun full of story blocks: click to drop
+  // one, and the block lands unbound while this code has already given up
+  // waiting and moved on. (Mike 2026-10-15: "preset blocks are attached to
+  // the cursor. I place them and they disappear.")
+  //
+  // page.place(file, placePoint) puts the snippet down at a point and returns
+  // the items. Everything below — the id diff, the shift to the anchor, the
+  // frame binding — was written for items that are already on the page, and
+  // never ran while the content was sitting on the cursor.
+  //
+  // The point is the anchor when we have one, so the shift below becomes a
+  // correction rather than a move across the sheet. showingOptions is false:
+  // an import dialog would stall a loop that places many blocks.
+  const placePoint = (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y))
+    ? [anchor.x, anchor.y]
+    : undefined;
+  // Clear anything a previous attempt left on the cursor, so this block is
+  // not appended behind someone else's leftovers.
+  abortPlaceGun();
   try {
-    doc.place(snippetPath, true);
-    console.log('[wvnews-print] doc.place(path, true) called');
+    if (placePoint) page.place(snippetPath, placePoint, undefined, false);
+    else page.place(snippetPath, undefined, undefined, false);
+    console.log('[wvnews-print] page.place called at',
+      placePoint ? `[${placePoint[0]}, ${placePoint[1]}]` : '(page default)');
   } catch (e) {
-    console.error('[wvnews-print] doc.place threw:', e?.message || e);
+    console.error('[wvnews-print] page.place threw:', e?.message || e);
+    abortPlaceGun();
     throw e;
   }
+  // Belt and braces: if this build loaded the cursor anyway, drop it rather
+  // than leaving the operator holding a block they have to click away.
+  abortPlaceGun();
 
   // Poll for the placement to land. Now that we're NOT inside
   // doScript, setTimeout will actually fire and the place pipeline
@@ -5039,6 +5064,23 @@ function cloudPageTempName(editionId, folio) {
   return `wv_${safeEdition}_${safeFolio}.indd`;
 }
 
+// Drop whatever the place cursor is carrying.
+//
+// A loaded place gun is sticky: it survives the call that created it, carries
+// into the next placement, and makes doc.close() throw "User canceled this
+// action." The build already does this before closing a page; placement needs
+// it too, so one stray gun cannot poison the rest of a run.
+function abortPlaceGun() {
+  const id = host();
+  try {
+    const w = id.app.activeWindow;
+    if (w && w.placeGun && w.placeGun.loaded) w.placeGun.abortPlaceGun();
+  } catch { /* no window, or no gun */ }
+  try {
+    if (id.app.placeGun && id.app.placeGun.loaded) id.app.placeGun.abortPlaceGun();
+  } catch { /* older builds expose it only on the window */ }
+}
+
 // Close any document already open at a page's temp path.
 //
 // MUST RUN BEFORE A BUILD. The build saves to wv_<edition>_<folio>.indd, and
@@ -5204,5 +5246,5 @@ module.exports = {
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
-  closeOpenPageDoc,
+  closeOpenPageDoc, abortPlaceGun,
 };
