@@ -1,0 +1,79 @@
+/* Approximations of the Spectrum UXP widgets for previewing in Chrome.
+ *
+ * Inside InDesign these elements are drawn by UXP itself and follow the
+ * host theme exactly. Here they are plain unknown elements, so this sheet
+ * gives them Spectrum's published sizes (size "s": 24px controls) and
+ * colours closely enough to judge layout, density and hierarchy. It is not
+ * pixel-exact and never ships — the build packages plugin/wvnews-print only.
+ */
+
+sp-button, sp-action-button, sp-picker, sp-textfield, sp-checkbox, sp-menu-item {
+  font-family: inherit;
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── Button ───────────────────────────────────────────── */
+sp-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 10px; min-width: 56px;
+  border-radius: 12px; border: 2px solid var(--fg-2);
+  font-size: 12px; font-weight: 700; line-height: 1; white-space: nowrap;
+  color: var(--fg); background: transparent; cursor: pointer;
+}
+sp-button:hover { background: var(--hover); }
+sp-button[variant="cta"] { background: #378ef0; border-color: #378ef0; color: #ffffff; }
+sp-button[variant="cta"]:hover { background: #4b9cf5; border-color: #4b9cf5; }
+html[data-theme$="light"] sp-button[variant="cta"] { background: #1473e6; border-color: #1473e6; }
+sp-button[variant="primary"] { border-color: var(--fg); color: var(--fg); }
+sp-button[variant="secondary"] { border-color: var(--fg-2); color: var(--fg-2); }
+sp-button[variant="warning"] { border-color: #e34850; color: #e34850; }
+sp-button[quiet] { border-color: transparent; }
+sp-button[disabled] { opacity: 0.4; pointer-events: none; }
+
+/* ── Action button ────────────────────────────────────── */
+sp-action-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 7px; border-radius: 4px; border: 1px solid transparent;
+  font-size: 12px; line-height: 1; white-space: nowrap;
+  color: var(--fg); background: transparent; cursor: pointer;
+}
+sp-action-button:not([quiet]) { background: var(--wash); border-color: var(--line); }
+sp-action-button:hover { background: var(--hover); }
+sp-action-button[disabled] { opacity: 0.38; pointer-events: none; }
+
+/* ── Picker ───────────────────────────────────────────── */
+sp-picker {
+  display: inline-flex; align-items: center; position: relative;
+  height: 24px; padding: 0 24px 0 8px; min-width: 96px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--wash);
+  font-size: 12px; color: var(--fg); cursor: pointer; overflow: hidden;
+}
+sp-picker::after { content: "⌄"; position: absolute; right: 8px; top: 2px; color: var(--fg-2); }
+sp-picker sp-menu { display: contents; }
+sp-picker sp-menu-item { display: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+sp-picker sp-menu-item[selected] { display: inline; }
+sp-picker:not(:has(sp-menu-item[selected]))::before { content: attr(label); color: var(--fg-2); }
+sp-picker[disabled] { opacity: 0.45; }
+
+/* ── Textfield ────────────────────────────────────────── */
+sp-textfield {
+  display: inline-flex; align-items: center;
+  height: 24px; padding: 0 8px; min-width: 40px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--wash);
+  font-size: 12px; color: var(--fg);
+}
+sp-textfield::before { content: attr(value); white-space: nowrap; overflow: hidden; }
+sp-textfield[value=""]::before { content: attr(placeholder); color: var(--fg-2); }
+
+/* ── Checkbox ─────────────────────────────────────────── */
+sp-checkbox { display: inline-flex; align-items: center; font-size: 12px; color: var(--fg); cursor: pointer; }
+sp-checkbox::before {
+  content: ""; width: 10px; height: 10px; margin-right: 8px; flex: 0 0 auto;
+  border: 2px solid var(--fg-2); border-radius: 2px;
+}
+sp-checkbox[checked]::before { background: var(--fg); border-color: var(--fg); box-shadow: inset 0 0 0 2px var(--surface); }
+
+/* ── Divider ──────────────────────────────────────────── */
+sp-divider { display: block; height: 1px; background: var(--line); }

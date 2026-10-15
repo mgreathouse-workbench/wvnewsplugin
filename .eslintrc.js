@@ -53,5 +53,13 @@ module.exports = {
     // to the function root as the rule asks would break them.
     'no-inner-declarations': 'off',
   },
-  ignorePatterns: ['dist/', 'node_modules/', '.build-plugin-tmp/'],
+  overrides: [
+    {
+      // The Chrome preview and smoke tests (dev/): Node ES modules, plus the
+      // browser globals the harness runs under.
+      files: ['dev/**/*.mjs'],
+      parserOptions: { sourceType: 'module' },
+    },
+  ],
+  ignorePatterns: ['dist/', 'node_modules/', '.build-plugin-tmp/', 'dev/screenshots/'],
 };

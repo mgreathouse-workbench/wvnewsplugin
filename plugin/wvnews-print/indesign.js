@@ -5267,22 +5267,86 @@ async function createBlankPage({ editionId, folio }) {
   return { doc, tempPath, fileName, bytes: null };
 }
 
-// Find the open document matching a previously-downloaded temp path.
-// Used by check-in / close-without-save flows so we don't blindly
-// operate on whatever the user has frontmost.
+// Find the open document for one checked-out page, by its FILE NAME. Check-in
+// and the close sweep use it so they never act on whatever happens to be in
+// front.
+//
+// This used to have a second test:
+//
+//   if (d.filePath && String(d.filePath).indexOf(<the temp FOLDER>) !== -1) return d;
+//
+// which matches ANY document in the plugin's temp folder — and every page the
+// panel checks out lives in that folder. With A1 open, it reported A6 as "still
+// open", so the close sweep never checked A6 in, and Check In on a closed A6
+// saved, read and then CLOSED A1's window. (Mike 2026-10-15: "A6 did not
+// check in.")
+//
+// The name is the identity: wv_<edition>_<folio>.indd, unique per page, and the
+// same test activeDocIsPage and closeOpenPageDoc already rely on. fullName is
+// kept as an exact-path check for builds where it stringifies to a path.
 function findOpenDocByTempPath(tempPath) {
   if (!tempPath) return null;
+  const want = String(tempPath).split(/[\\/]/).pop();
   const id = host();
   try {
     for (let i = 0; i < id.app.documents.length; i++) {
       const d = id.app.documents.item(i);
       try {
-        if (d.fullName && String(d.fullName).indexOf(tempPath) !== -1) return d;
-        if (d.filePath && String(d.filePath).indexOf(tempPath.replace(/\/[^/]+$/, '')) !== -1) return d;
+        if (String(d.name || '') === want) return d;
+        if (d.fullName && String(d.fullName) === String(tempPath)) return d;
       } catch { /* keep looking */ }
     }
   } catch { /* no docs */ }
   return null;
+}
+
+// Make a checked-out page the front document.
+//
+// Auto-paginate places into the front document, so paginating A5 with A6 in
+// front would either refuse or — before #28 — quietly put A5's stories on A6.
+// Returns true only when the page is verifiably in front afterwards: some
+// InDesign builds refuse the activeDocument assignment, and then the page's
+// layout window is brought forward instead.
+function bringPageToFront(editionId, folio) {
+  const id = host();
+  const name = cloudPageTempName(editionId, folio);
+  let doc = null;
+  try {
+    for (let i = 0; i < id.app.documents.length; i++) {
+      const d = id.app.documents.item(i);
+      try { if (String(d.name || '') === name) { doc = d; break; } } catch { /* skip */ }
+    }
+  } catch { return false; }
+  if (!doc) return false;
+  if (activeDocIsPage(editionId, folio).ok) return true;
+  try { id.app.activeDocument = doc; } catch { /* read-only on some builds */ }
+  if (activeDocIsPage(editionId, folio).ok) return true;
+  try {
+    const w = doc.layoutWindows && doc.layoutWindows.length ? doc.layoutWindows.item(0) : null;
+    if (w && typeof w.bringToFront === 'function') w.bringToFront();
+  } catch { /* fall through to the check */ }
+  return activeDocIsPage(editionId, folio).ok;
+}
+
+// InDesign's interface brightness, 0 (Dark) to 1 (Light), or null when this
+// build does not expose it. The panel's theme fallback reads it (ui/theme.js).
+function uiBrightness() {
+  try {
+    const b = host().app.generalPreferences.uiBrightnessPreference;
+    return typeof b === 'number' ? b : null;
+  } catch { return null; }
+}
+
+// Names of every open document — for the panel to show which pages are open.
+function openDocumentNames() {
+  const out = [];
+  try {
+    const id = host();
+    for (let i = 0; i < id.app.documents.length; i++) {
+      try { out.push(String(id.app.documents.item(i).name || '')); } catch { /* skip */ }
+    }
+  } catch { /* none open */ }
+  return out;
 }
 
 // Save the active document in place (back to the temp path it was opened
@@ -5353,5 +5417,6 @@ module.exports = {
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, readPageBytes, closePageDoc,
-  closeOpenPageDoc, abortPlaceGun, activeDocIsPage,
+  closeOpenPageDoc, abortPlaceGun, activeDocIsPage, bringPageToFront, openDocumentNames,
+  uiBrightness,
 };
