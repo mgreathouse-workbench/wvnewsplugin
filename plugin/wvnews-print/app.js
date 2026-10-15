@@ -589,14 +589,32 @@ function renderMain() {
       if (state.pubForm) state.pubForm.assignments[folio] = el.value || '';
     };
   }
-  $('site-sel').onchange = (e) => { state.siteId = e.target.value; render(); };
+  // GUARDED, because these are conditional now.
+  //
+  // The publication select, the date picker and Load budget render only when
+  // NO edition is chosen — once one is, the context bar replaces them. This
+  // wiring ran unconditionally and threw the moment an edition was picked:
+  //
+  //   TypeError: Cannot set properties of null (setting 'onchange')
+  //     at renderMain (app.js:592)
+  //
+  // which took the whole render down with it. bindDatePicker() already
+  // guards every element it touches; these two did not.
+  const siteSel = $('site-sel');
+  if (siteSel) siteSel.onchange = (e) => { state.siteId = e.target.value; render(); };
   bindDatePicker();
-  $('btn-load').onclick = () => refreshBudget();
+  const btnLoad = $('btn-load');
+  if (btnLoad) btnLoad.onclick = () => refreshBudget();
   const btnReloadSites = $('btn-reload-sites');
   if (btnReloadSites) btnReloadSites.onclick = async () => { await loadSites(); render(); };
-  $('btn-signout').onclick = async () => {
+  // Rendered in BOTH shell branches — the context bar and the picker row —
+  // so it is always present today. Guarded anyway: that is an invariant held
+  // in two places now, and a render that throws takes the whole panel down.
+  const btnSignout = $('btn-signout');
+  if (btnSignout) btnSignout.onclick = async () => {
     await signOut();
     state.user = null; state.budget = null; state.sites = []; state.siteId = '';
+    state.selectedEdition = null; state.selectedEditionId = null;
     render();
   };
 
