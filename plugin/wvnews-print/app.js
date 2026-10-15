@@ -871,6 +871,19 @@ async function onPublishPage() {
     await refreshMarketplace();
   } catch (err) {
     state.error = err.message;
+  } finally {
+    // This used to clear `busy` in the CATCH only. A publish that WORKED
+    // left state.busy true for the rest of the session: every button in the
+    // panel renders `disabled` off that flag, so the plugin looked frozen,
+    // with no error on screen and nothing red in the console — because
+    // nothing had gone wrong. refreshMarketplace() does not touch busy, so
+    // nothing downstream cleared it either.
+    //
+    // (Mike 2026-10-15: "clicking around the plugin has frozen it again. I
+    // don't see any red in the UXP Debug.")
+    //
+    // Every other handler in this file already resets in a finally. This one
+    // was the exception.
     state.busy = false; render();
   }
 }
