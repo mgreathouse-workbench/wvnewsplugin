@@ -2378,9 +2378,18 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   // Clear anything a previous attempt left on the cursor, so this block is
   // not appended behind someone else's leftovers.
   abortPlaceGun();
+
+  // ONE OR TWO ARGUMENTS. Not four.
+  //
+  // placeTemplate, which works in this build, calls page.place(path) or
+  // page.place(path, point) and nothing else. Passing the full signature with
+  // `undefined` for destinationLayer — page.place(path, point, undefined,
+  // false) — placed nothing at all: the binding rejects the undefined object
+  // parameter rather than treating it as "argument omitted". Mirror the call
+  // that is known to work.
   try {
-    if (placePoint) page.place(snippetPath, placePoint, undefined, false);
-    else page.place(snippetPath, undefined, undefined, false);
+    if (placePoint) page.place(snippetPath, placePoint);
+    else page.place(snippetPath);
     console.log('[wvnews-print] page.place called at',
       placePoint ? `[${placePoint[0]}, ${placePoint[1]}]` : '(page default)');
   } catch (e) {
@@ -2388,9 +2397,6 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
     abortPlaceGun();
     throw e;
   }
-  // Belt and braces: if this build loaded the cursor anyway, drop it rather
-  // than leaving the operator holding a block they have to click away.
-  abortPlaceGun();
 
   // Poll for the placement to land. Now that we're NOT inside
   // doScript, setTimeout will actually fire and the place pipeline
@@ -2408,6 +2414,14 @@ async function placeAndBindStoryBlock(blockId, story, anchor) {
   console.log(`[wvnews-print] post-poll: page ${baselineCt}->${polledPage}, spread ${baselineSpreadCt}->${polledSpread} (waited ${Date.now() - pollStart}ms)`);
 
   if (polledPage <= baselineCt && polledSpread <= baselineSpreadCt) {
+    // Nothing landed. If this build loaded the cursor instead of placing,
+    // the block is sitting on it — drop it, or the operator is left holding
+    // content they have to click away and the next place appends behind it.
+    //
+    // ONLY on this branch. Aborting unconditionally after a SUCCESSFUL place
+    // threw away the very items that had just landed, which read exactly like
+    // the bug it was meant to fix: nothing placed.
+    abortPlaceGun();
     console.warn('[wvnews-print] place() did not add items within 2s — skipping bind for', story.id);
     return { placed: [], framesBound: [] };
   }
