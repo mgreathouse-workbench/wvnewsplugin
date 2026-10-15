@@ -181,6 +181,14 @@ const state = {
   snippets: [],                    // results of listSnippets(siteId)
   snippetsById: {},                // lookup: snippetId → { id, name, ... }
 
+  // Check a page in by itself once its document is closed. On by default:
+  // closing the window is how somebody signals they are done with a page,
+  // and the alternative — silently keeping the work off the website — is
+  // the failure this was asked for. The Pages tab shows the toggle so it is
+  // never a surprise.
+  autoCheckinOnClose: true,
+  autoCheckinWarned: null,
+
   // Create/edit form state. `mode` decides POST vs PATCH on submit.
   // Empty pubForm = no form open; non-null = form is rendered.
   pubForm: null,                   // see openPubForm() for shape
@@ -501,6 +509,12 @@ function renderMain() {
   for (const el of document.querySelectorAll('[data-held-checkin]')) {
     el.onclick = () => onCheckinPage(el.getAttribute('data-held-checkin'));
   }
+  const chkAuto = $('chk-autocheckin');
+  if (chkAuto) chkAuto.onchange = (e) => {
+    state.autoCheckinOnClose = !!e.target.checked;
+    state.autoCheckinWarned = null;
+    render();
+  };
   const btnCheckinAll = $('btn-checkin-all');
   if (btnCheckinAll) btnCheckinAll.onclick = () => onCheckinAllHeld();
   const btnRefreshAds = $('btn-refresh-ads');
@@ -1236,6 +1250,10 @@ function renderActiveCheckoutBanner(pub) {
         </span>
       </div>
       <div style="font-size:9px;color:#0a4a1c;margin-top:2px;">
+        <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="chk-autocheckin" ${state.autoCheckinOnClose ? 'checked' : ''} />
+          Check in automatically when I close a page
+        </label><br>
         Check in saves the page, uploads it and closes it — no need to save first.
         ${held.length > 1 ? 'Each page is saved and closed as it is checked in.' : ''}
       </div>
@@ -1647,8 +1665,68 @@ function dropCheckout(editionId, folio) {
   if (!Object.keys(next).length) stopHeartbeat();
 }
 
+// Check in pages whose document the operator has closed.
+//
+// Asked for directly (Mike 2026-10-15) after closing A1, saving it, checking
+// in, and finding it had not uploaded. #29 made a closed page checkinable;
+// this makes it automatic, so closing the window IS finishing with the page.
+//
+// Runs on its own short timer rather than the 5-minute lock heartbeat —
+// waiting five minutes to find out whether your page went up is not much
+// better than it never going up.
+//
+// Three things it deliberately does not do:
+//
+//   * It never touches a page the panel does not hold. Build and Rebuild
+//     close documents of their own and drop the check-out record first, so
+//     their closes are invisible here — no double upload.
+//   * It skips a file that is still exactly the length we downloaded.
+//     Opening a page, looking at it and closing it is not an edit, and
+//     should not add a version.
+//   * It stops at the first failure for that page and leaves the check-out
+//     alone, so a network blip retries on the next sweep instead of
+//     stranding the work.
+async function sweepClosedPages() {
+  if (!state.autoCheckinOnClose) return;
+  if (state.busy) return;                 // never race a check-in in progress
+  for (const co of heldPages()) {
+    if (findOpenDocByTempPath(co.tempPath)) continue;   // still open
+    let bytes;
+    try {
+      bytes = await readPageBytes(co.fileName);
+    } catch {
+      continue;   // closed with no file: nothing to upload, leave it be
+    }
+    if (co.openedBytes != null && bytes.byteLength === co.openedBytes) {
+      continue;   // opened and closed without saving
+    }
+    try {
+      const result = await checkinPage({
+        editionId: co.editionId, folio: co.folio, bytes,
+        note: 'Checked in automatically when the page was closed',
+      });
+      state.editionPages = { ...state.editionPages, [co.folio]: result.page };
+      dropCheckout(co.editionId, co.folio);
+      state.info = `${co.folio} checked in as v${result.page.currentVersion} — you closed it.`;
+      render();
+    } catch (err) {
+      // Said once, not every sweep: a repeating banner for a page the
+      // operator has already walked away from is noise.
+      if (state.autoCheckinWarned !== co.folio) {
+        state.autoCheckinWarned = co.folio;
+        state.error = `${co.folio} was closed but could not be checked in: ${err.message}`;
+        render();
+      }
+    }
+  }
+}
+
 function startHeartbeat() {
   stopHeartbeat();
+  // Watch for closed documents far more often than the lock heartbeat runs.
+  G.__wvnewsPlugin.sweepTimer = setInterval(() => {
+    sweepClosedPages().catch(() => { /* reported inside, per page */ });
+  }, 10000);
   G.__wvnewsPlugin.heartbeatTimer = setInterval(async () => {
     const held = heldPages();
     if (!held.length) { stopHeartbeat(); return; }
@@ -1682,6 +1760,13 @@ function stopHeartbeat() {
   if (G.__wvnewsPlugin.heartbeatTimer) {
     clearInterval(G.__wvnewsPlugin.heartbeatTimer);
     G.__wvnewsPlugin.heartbeatTimer = null;
+  }
+  // The close sweep starts and stops with the heartbeat — both exist only
+  // while pages are held, and leaking either across a panel reload would
+  // leave two timers running against the same checkouts.
+  if (G.__wvnewsPlugin.sweepTimer) {
+    clearInterval(G.__wvnewsPlugin.sweepTimer);
+    G.__wvnewsPlugin.sweepTimer = null;
   }
 }
 
@@ -1719,6 +1804,11 @@ async function onCheckoutPage(folio) {
       tempPath: opened.tempPath,
       fileName: opened.fileName,
       lock: co.page.lock,
+      // Size of what we just put on disk. If the file is still exactly this
+      // long when the document closes, nothing was saved over it — so the
+      // auto check-in below has nothing worth uploading and stays quiet
+      // rather than adding a version identical to the one already there.
+      openedBytes: opened.bytes ?? null,
     });
     state.editionPages = { ...state.editionPages, [folio]: co.page };
     const n = heldFor(pub.id).length;

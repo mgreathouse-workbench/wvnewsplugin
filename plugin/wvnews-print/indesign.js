@@ -5224,7 +5224,13 @@ async function openDownloadedPage({ editionId, folio, arrayBuffer }) {
       throw new Error(`Could not open ${folio}.indd: ${e2.message || e1.message}`);
     }
   }
-  return { doc, tempPath, fileName: cloudPageTempName(editionId, folio) };
+  // `bytes` is how long the file is as we just wrote it. The panel keeps it
+  // so a page that is opened, looked at and closed can be told from one that
+  // was actually saved over — the first should not produce a new version.
+  return {
+    doc, tempPath, fileName: cloudPageTempName(editionId, folio),
+    bytes: (arrayBuffer && (arrayBuffer.byteLength ?? arrayBuffer.length)) ?? null,
+  };
 }
 
 // Create a new blank InDesign document and save it to the same temp
@@ -5256,7 +5262,9 @@ async function createBlankPage({ editionId, folio }) {
       throw new Error(`Could not save blank ${folio}: ${e2.message || e1.message}`);
     }
   }
-  return { doc, tempPath, fileName };
+  // No downloaded bytes for a blank page — anything saved over it is new
+  // work by definition, so leave this null and let the sweep upload it.
+  return { doc, tempPath, fileName, bytes: null };
 }
 
 // Find the open document matching a previously-downloaded temp path.
