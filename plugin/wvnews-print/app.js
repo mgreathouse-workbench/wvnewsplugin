@@ -82,7 +82,7 @@ const {
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
-  closeOpenPageDoc,
+  closeOpenPageDoc, activeDocIsPage,
 } = require('./indesign.js');
 const { isColorPage } = require('./color-placement.js');
 
@@ -2289,6 +2289,33 @@ async function onAutoPaginatePage(folio) {
     state.error = `No stories assigned to ${folio}.`;
     render(); return;
   }
+
+  // Auto-paginate places into the FRONT document. Check it is this folio
+  // before placing a single block.
+  //
+  // Nothing checked before, which gave two bad outcomes: no document open
+  // threw a bare "Open a document first" from deep in indesign.js, and —
+  // silently, which is worse — another page in front took the stories meant
+  // for this one.
+  //
+  // It also bites straight after a build now: Build and Rebuild check the
+  // page in and CLOSE it, so the obvious next click had nothing open to
+  // paginate into. Say which page to open rather than failing obscurely.
+  // (Mike 2026-10-15.)
+  const editionId = state.selectedEditionId || state.selectedEdition?.id;
+  if (editionId) {
+    const chk = activeDocIsPage(editionId, folio);
+    if (!chk.ok) {
+      state.error = chk.actual
+        ? `${folio} is not the front document — "${chk.actual}" is. `
+          + `Check out ${folio} on the Pages tab (or bring its window to the front), then Auto-paginate. `
+          + 'Nothing was placed.'
+        : `No page is open. Check out ${folio} on the Pages tab, then Auto-paginate. Nothing was placed.`;
+      render();
+      return;
+    }
+  }
+
   state.busy = true; state.error = ''; state.info = ''; render();
   try {
     const result = await autoPaginatePage(pubProfile, folio, stories);

@@ -5137,6 +5137,28 @@ function abortPlaceGun() {
   } catch { /* older builds expose it only on the window */ }
 }
 
+// Is the FRONT document the one for this folio?
+//
+// autoPaginatePage places into activeDocument(), whatever that happens to be.
+// Nothing checked it was the page the operator clicked, so the failure modes
+// were: no document open at all, which throws a bare "Open a document first",
+// and — worse, because it is silent — another folio in front, which quietly
+// paginates A5's stories onto B1.
+//
+// Returns { ok, expected, actual } so the caller can say which page to open
+// rather than reporting Adobe's wording.
+function activeDocIsPage(editionId, folio) {
+  const expected = cloudPageTempName(editionId, folio);
+  let actual = null;
+  try {
+    const id = host();
+    const doc = id.app.documents.length ? id.app.activeDocument : null;
+    if (doc) actual = String(doc.name || '');
+  } catch { /* no document open */ }
+  const ok = !!actual && (actual === expected || actual.indexOf(expected) !== -1);
+  return { ok, expected, actual };
+}
+
 // Close any document already open at a page's temp path.
 //
 // MUST RUN BEFORE A BUILD. The build saves to wv_<edition>_<folio>.indd, and
@@ -5302,5 +5324,5 @@ module.exports = {
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
   refreshPlacedAdsOnActivePage,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, closePageDoc,
-  closeOpenPageDoc, abortPlaceGun,
+  closeOpenPageDoc, abortPlaceGun, activeDocIsPage,
 };
