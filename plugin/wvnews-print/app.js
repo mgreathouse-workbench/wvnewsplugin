@@ -157,7 +157,12 @@ const state = {
   // The panel toggles between two top-level views: the existing
   // budget+placement flow ('budget') and the new edition-build flow
   // ('editions'). See PUBLICATION-CREATION-SPEC.md.
-  view: 'budget',                  // 'budget' | 'editions' | 'marketplace'
+  // 'pages' | 'budget' | 'marketplace' | 'setup'.
+  //
+  // Pages is the default because it is the screen somebody has open all day:
+  // the folio list for the edition they are working on. Setup is where an
+  // edition is created or re-planned, which happens once.
+  view: 'pages',
 
   // Marketplace tab: available classifieds / legals / obits / ads for the
   // selected publication, pulled on demand and placed into a frame.
@@ -352,51 +357,107 @@ function renderMain() {
   const siteOptions = state.sites.length
     ? state.sites.map(s => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')
     : `<option value="">${state.sitesLoading ? 'Loading…' : 'No publications available'}</option>`;
+  // ── The shell ─────────────────────────────────────────────────────
+  //
+  // One edition is the context. It is chosen once, shown in a bar that is
+  // visible from every tab, and changed only from that bar. Each tab is one
+  // job done TO that edition, so no tab needs its own publication/date
+  // pickers and none of them can disagree about which edition is current.
+  //
+  // Before this the pickers sat above every screen, the Editions tab was
+  // three different screens behind one label, and a tab switch silently
+  // dropped the edition. (Mike 2026-10-15: "way too messy ... once you
+  // choose an edition and date you should always be able to easily get back
+  // to the pages list.")
+  const ed = state.selectedEdition;
+  // Pages is the default, but it needs an edition. On first run there is
+  // none, so fall through to Setup — the screen where you pick one — rather
+  // than opening on a disabled tab and an empty panel.
+  const view = (state.view === 'pages' && !ed) ? 'setup' : state.view;
+  const tab = (id, label, enabled = true) => `<button class="ghost" data-view="${id}"
+      ${enabled ? '' : 'disabled'}
+      style="font-weight:${view === id ? '700' : '400'};border-bottom:${view === id ? '2px solid #1b5e20' : '2px solid transparent'};border-radius:0;${enabled ? '' : 'opacity:0.45;'}"
+      >${label}</button>`;
+
   main().innerHTML = `
-    <div class="row" style="margin-bottom:8px;">
-      <label class="field" style="margin:0;">
-        <span class="lbl">Publication</span>
-        <select id="site-sel">
-          ${siteOptions}
-        </select>
-      </label>
-      <label class="field" style="margin:0;">
-        <span class="lbl">Edition</span>
-        ${renderDatePicker()}
-      </label>
-    </div>
-    <div class="row" style="margin-bottom:8px;">
-      <button class="primary" id="btn-load" ${!state.siteId ? 'disabled' : ''}>${state.budget ? 'Refresh' : 'Load budget'}</button>
-      ${!state.sites.length && !state.sitesLoading
-        ? '<button class="secondary" id="btn-reload-sites">Reload pubs</button>' : ''}
-      <button class="ghost" id="btn-signout">Sign out</button>
-    </div>
+    ${ed ? `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:6px;
+                  background:#eef3ee;border:1px solid #cfe0cf;border-radius:4px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;font-size:12px;">${escapeHtml(ed.id)}</div>
+          <div style="font-size:10px;color:#4a5a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+            ${escapeHtml(ed.dayOfWeek || '')} ${escapeHtml(ed.editionDate || '')}
+            · ${(ed.pages || []).length} pp
+            · ${escapeHtml(ed.status || 'planned')}
+          </div>
+        </div>
+        <button class="secondary" id="btn-change-edition" style="font-size:10px;padding:2px 6px;">Change</button>
+        <button class="ghost" id="btn-signout" style="font-size:10px;padding:2px 6px;">Sign out</button>
+      </div>
+    ` : `
+      <div class="row" style="margin-bottom:8px;">
+        <label class="field" style="margin:0;">
+          <span class="lbl">Publication</span>
+          <select id="site-sel">${siteOptions}</select>
+        </label>
+        <label class="field" style="margin:0;">
+          <span class="lbl">Edition</span>
+          ${renderDatePicker()}
+        </label>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <button class="primary" id="btn-load" ${!state.siteId ? 'disabled' : ''}>${state.budget ? 'Refresh' : 'Load budget'}</button>
+        ${!state.sites.length && !state.sitesLoading
+          ? '<button class="secondary" id="btn-reload-sites">Reload pubs</button>' : ''}
+        <button class="ghost" id="btn-signout">Sign out</button>
+      </div>
+    `}
     ${state.error  ? alertBlock('error', state.error) : ''}
     ${state.info   ? alertBlock('info', state.info)   : ''}
     ${state.busy   ? `<div class="empty"><span class="spinner"></span> Working…</div>` : ''}
 
     <div class="row" style="margin:6px 0 8px;border-bottom:1px solid #d4d4d4;">
-      <button class="ghost" data-view="budget"       style="font-weight:${state.view === 'budget' ? '700' : '400'};border-bottom:${state.view === 'budget' ? '2px solid #1b5e20' : '2px solid transparent'};border-radius:0;">Budget</button>
-      <button class="ghost" data-view="editions" style="font-weight:${state.view === 'editions' ? '700' : '400'};border-bottom:${state.view === 'editions' ? '2px solid #1b5e20' : '2px solid transparent'};border-radius:0;">Editions</button>
-      <button class="ghost" data-view="marketplace" style="font-weight:${state.view === 'marketplace' ? '700' : '400'};border-bottom:${state.view === 'marketplace' ? '2px solid #1b5e20' : '2px solid transparent'};border-radius:0;">Marketplace</button>
+      ${tab('pages', 'Pages', !!ed)}
+      ${tab('budget', 'Budget')}
+      ${tab('marketplace', 'Marketplace')}
+      ${tab('setup', 'Setup')}
     </div>
 
-    ${state.view === 'editions'
+    ${view === 'setup'
       ? renderEditionsView()
-      : state.view === 'marketplace'
+      : view === 'marketplace'
       ? renderMarketplaceView()
+      : view === 'pages'
+      ? renderEditionDetail(ed)
       : `${state.budget ? renderBudgetList() : '<div class="empty">Pick a publication and edition, then click Load budget.</div>'}
          ${sel ? renderDetail(sel) : ''}`
     }
   `;
+  const btnChange = $('btn-change-edition');
+  if (btnChange) btnChange.onclick = () => {
+    // The ONE place the edition changes. Goes to the Setup list rather than
+    // clearing silently, so you are always looking at what you can pick.
+    state.selectedEdition = null;
+    state.selectedEditionId = null;
+    state.pubView = 'list';
+    state.view = 'setup';
+    state.error = ''; state.info = '';
+    render();
+    refreshEditions().catch(() => {});
+  };
   for (const el of document.querySelectorAll('[data-view]')) {
     el.onclick = () => {
       const v = el.getAttribute('data-view');
       if (state.view === v) return;
       state.view = v;
       state.error = ''; state.info = '';
-      state.selectedEditionId = null;
-      state.selectedEdition = null;
+      // The chosen edition SURVIVES a tab switch.
+      //
+      // This used to null selectedEditionId/selectedEdition here, so going to
+      // Budget and back dropped the edition and you had to find it in the
+      // list again. The edition is the context every tab works in — it is
+      // changed from the context bar, deliberately, and nowhere else.
+      // (Mike 2026-10-15.)
       render();
       if (v === 'editions') refreshEditions();
       if (v === 'marketplace') refreshMarketplace();
@@ -420,7 +481,10 @@ function renderMain() {
   // button in the detail view returns to the list.
   for (const el of document.querySelectorAll('[data-pub-id]')) {
     el.onclick = () => {
+      // Picking an edition in Setup takes you to its pages, which is what
+      // you wanted it for.
       state.pubView = 'detail';
+      state.view = 'pages';
       selectEdition(el.getAttribute('data-pub-id'));
     };
   }
@@ -447,17 +511,9 @@ function renderMain() {
     const eid = state.selectedEditionId || (heldPages()[0] && heldPages()[0].editionId);
     if (eid) refreshEditionPages(eid);
   };
-  const btnPubBack = $('btn-pub-back');
-  if (btnPubBack) {
-    btnPubBack.onclick = () => {
-      state.selectedEditionId = null;
-      state.selectedEdition = null;
-      state.pubView = 'list';
-      state.confirmRebuild = false;
-      state.error = '';
-      render();
-    };
-  }
+  // The old "← Editions" back button is gone. The tab row is the way back,
+  // and the context bar's Change is the way to a different edition. The edit
+  // form has its own btn-pub-cancel, handled below.
   // Create + edit form
   const btnPubNew = $('btn-pub-new');
   if (btnPubNew) btnPubNew.onclick = () => openPubForm(null);
@@ -914,9 +970,9 @@ function renderEditionsView() {
   if (state.pubView === 'form' && state.pubForm) {
     return renderEditionForm();
   }
-  if (state.pubView === 'detail' && state.selectedEdition) {
-    return renderEditionDetail(state.selectedEdition);
-  }
+  // No 'detail' branch any more. The folio list is the Pages TAB — rendering
+  // it here too would mean two screens showing the same thing, which is half
+  // of what made the Editions tab confusing: one label, three screens.
   return renderEditionsList();
 }
 
@@ -1184,9 +1240,6 @@ async function onCheckinAllHeld() {
 function renderEditionDetail(pub) {
   const pages = pub.pages || [];
   return `
-    <div style="margin-bottom:8px;">
-      <button class="ghost" id="btn-pub-back">← Editions</button>
-    </div>
     <div style="margin-bottom:8px;">
       <div style="font-weight:700;font-size:14px;">${escapeHtml(pub.id)}</div>
       <div style="font-size:11px;color:#6b6b6b;">
@@ -1464,6 +1517,14 @@ async function selectEdition(id) {
     const resp = await getEdition(id);
     state.selectedEditionId = id;
     state.selectedEdition = resp?.edition || null;
+    // Keep the budget/marketplace context in step. They are driven by
+    // siteId + editionDate; the edition knows both, so choosing an edition
+    // now configures every tab at once instead of leaving the Budget tab
+    // pointed somewhere else.
+    if (state.selectedEdition) {
+      state.siteId = state.selectedEdition.siteId || state.siteId;
+      state.editionDate = state.selectedEdition.editionDate || state.editionDate;
+    }
     // Cloud page-files live in a sibling collection; load alongside.
     // Fire-and-forget — the inline edition view renders without them
     // and updates when the promise resolves.
