@@ -39,7 +39,9 @@ plugin/wvnews-print/  --(node scripts/build-plugin-ccx.js)-->  dist/wvnews-print
 - `config.js` defaults `SERVER_BASE` to the localhost dev server; the build script rewrites it via `PLUGIN_SERVER_BASE` and strips localhost from the manifest.
 - Staging build: `PLUGIN_SERVER_BASE=https://staging.wvnews.com node scripts/build-plugin-ccx.js`
 - Production build: `PLUGIN_SERVER_BASE=https://wvnews.com node scripts/build-plugin-ccx.js`
-- Sideload the `.ccx` via Adobe UXP Developer Tool → Add Plugin. **UXP does not hot-reload** — unload + re-add after a rebuild.
+- Install by loading `plugin/wvnews-print/manifest.json` in UXP (Add Plugin → Load) —
+  a `.ccx` is the Exchange/Creative Cloud package and must be Adobe-signed first;
+  UXP does not open one. Corrected 2026-10-14, having been wrong here since the start.
 
 ---
 

@@ -14,11 +14,24 @@ scripts/build-plugin-ccx.js   packages the plugin into a .ccx
 scripts/gen-plugin-icons.js   regenerates panel icons
 ```
 
+## Install the plugin on a machine
+
+In UXP: **Add Plugin → select `plugin/wvnews-print/manifest.json` → Load.**
+
+That is the whole procedure, on your machine and on anyone else's. No
+packaging and no signing: the folder is self-contained, and **Reload** picks
+up a `git pull`. To put it on a machine without the repo, copy
+`plugin/wvnews-print/` across and load the `manifest.json` there.
+
 ## Build a .ccx
+
+A `.ccx` is the **distribution** package, for Adobe Exchange and Creative
+Cloud, and Adobe must **sign** it before it can be installed anywhere.
+**UXP does not open a `.ccx` — it builds one.** It is not how you sideload.
 
 ```bash
 PLUGIN_SERVER_BASE=https://staging.wvnews.com node scripts/build-plugin-ccx.js
-# → dist/wvnews-print-<version>.ccx   (sideload via Adobe UXP Developer Tool → Add Plugin)
+# → dist/wvnews-print-<version>.ccx   (for Adobe signing, not for sideloading)
 ```
 
 `config.js` defaults `SERVER_BASE` to the dev server; the build script rewrites it to the injected `PLUGIN_SERVER_BASE`, strips `localhost` from the manifest, and locks `launchProcess` to `https`. Use `https://wvnews.com` for production builds.
