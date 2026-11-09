@@ -76,6 +76,7 @@ const auth = require('./auth.js');
 const api = require('./api.js');
 const id = require('./indesign.js');
 const colorPlacement = require('./color-placement.js');
+const adPiece = require('./ad-piece.js');
 
 const h = require('./ui/html.js');
 const fmt = require('./ui/format.js');
@@ -167,7 +168,7 @@ const host = {
     try { return require('os').hostname() || ''; } catch { return ''; }
   },
 };
-const ctx = { store, run, fail, api, auth, id, fmt, persist, host, colorPlacement };
+const ctx = { store, run, fail, api, auth, id, fmt, persist, host, colorPlacement, adPiece };
 ctx.session = createSession(ctx);
 ctx.editions = createEditions(ctx);
 ctx.pages = createPages(ctx);
@@ -177,7 +178,7 @@ ctx.nav = createNavigation(ctx);
 
 // ── Views ─────────────────────────────────────────────────────────────
 const ui = createCommon(h);
-const viewDeps = { ...h, fmt, ui, foliosOf, previewEditionId };
+const viewDeps = { ...h, fmt, ui, foliosOf, previewEditionId, adPiece };
 const views = {
   pages: createPagesView(viewDeps),
   budget: createBudgetView(viewDeps),
@@ -281,7 +282,7 @@ createEvents({
       loadMarket: () => M.load(),
       placeLiners: (kind) => M.placeLiners(kind),
       updateHeaders: () => M.updateHeaders(),
-      placeAd: (adId) => M.placeAd(adId),
+      placeAd: (adKey) => M.placeAd(adKey),
       publishPage: () => M.publishPage(),
     },
     change: {

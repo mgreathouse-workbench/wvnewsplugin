@@ -22,6 +22,9 @@ const {
 const { columnWidthIn, columnOffsetIn, PAGE_FORMATS } = require('./page-geometry.js');
 const { classifiedPresentation } = require('./classified-presentation.js');
 const { LINER_TYPE, LINER_PHOTO_ASPECT } = require('./liner-type-spec.js');
+// Tina 2026-11-09: an order's ad frame is named by order AND piece, so a
+// multi-page legal display builds one well per piece. See ad-piece.js.
+const { adKey, splitAdKey, adFrameLabel, parseAdFrameLabel } = require('./ad-piece.js');
 
 // The grid the plugin lays out on. Everything below was previously hardcoded
 // to the Exponent Telegram broadsheet; this names that assumption so it can
@@ -4083,7 +4086,10 @@ async function placeOrderAsset(page, spread, asset) {
   for (const c of [page, spread]) {
     const f = frameByLabelOrName(c, 'ad');
     if (f) {
-      await placeUrlIntoFrame(f, asset.fileUrl, `order-${asset.id}`);
+      // Tina 2026-11-09: the payload carries pieceKey when the build fetched
+      // one piece; naming the temp file by piece keeps two pieces' artwork
+      // from overwriting each other in the temp folder.
+      await placeUrlIntoFrame(f, asset.fileUrl, adFrameLabel(asset));
       return;
     }
   }
@@ -4249,9 +4255,14 @@ function adSlotBounds(pageObj, format, slot, origin) {
 // The caption is a separate text frame labelled `order-<id>-holding` so that
 // re-running Build Pages, or a later pass that drops real artwork in, can find
 // and delete it without disturbing the ad frame itself.
+//
+// Tina 2026-11-09: a piece's box says which piece it is ("8123 · Page 2 of 4").
+// Four grey boxes all reading 8123 would leave the art chaser guessing which
+// file each one is waiting for.
 function drawHoldingBox(id, doc, pageObj, rect, slot) {
-  const orderId = slotIdentity(slot).id;
-  const shown = orderId || (slot.adNum ? String(slot.adNum) : '');
+  const { id: orderId, pieceKey, frameLabel } = slotIdentity(slot);
+  const shown = (orderId || (slot.adNum ? String(slot.adNum) : ''))
+    + (pieceKey ? ` · ${slot.pieceLabel || pieceKey}` : '');
   try {
     rect.fillColor = doc.colors.item('Black');
     rect.fillTint = 12;
@@ -4265,7 +4276,7 @@ function drawHoldingBox(id, doc, pageObj, rect, slot) {
   const gb = rect.geometricBounds;
   try {
     const caption = pageObj.textFrames.add({ geometricBounds: gb });
-    caption.label = `${slotIdentity(slot).frameLabel}-holding`;
+    caption.label = `${frameLabel}-holding`;
     caption.contents = `${shown}\r${slot.label || slot.advertiser || ''}`.trim();
     try {
       caption.textFramePreferences.verticalJustification = id.VerticalJustification.CENTER_ALIGN;
@@ -4289,19 +4300,38 @@ function drawHoldingBox(id, doc, pageObj, rect, slot) {
 // artwork, and a house ad must never be labelled `order-<id>` — Publish Page
 // parses those to decide what to commit against real insertions, and a filler
 // has none.
+//
+// Tina 2026-11-09: a piece of a multi-piece order comes as "order:8123#p2"
+// (the platform's asset-key.js), with pieceKey on the slot as well. `id` is
+// the ORDER id alone — it is what the asset endpoint, the CRM and Publish Page
+// know — and `pieceKey` travels beside it; read whole, "8123#p2" went to
+// /asset/order/8123%23p2 and came back 404, a grey box with no art. `key`
+// ("8123#p2") is what tells two pieces of one order apart, and the frame label
+// is built from it so their wells never collide. A slot with no piece gets
+// the id and label it always had.
 function slotIdentity(slot) {
   const raw = String(slot.orderId || slot.id || '');
   const m = String(slot.id || '').match(/^(order|filler):(.+)$/);
   const kind = m ? m[1] : (slot.kind || 'order');
-  const id = m ? m[2] : raw.replace(/^(order|filler):/, '');
-  return { kind, id, frameLabel: kind === 'filler' ? `filler-${id}` : `order-${id}` };
+  const whole = m ? m[2] : raw.replace(/^(order|filler):/, '');
+  if (kind === 'filler') {
+    return { kind, id: whole, pieceKey: null, key: whole, frameLabel: `filler-${whole}` };
+  }
+  const split = splitAdKey(whole);
+  const id = split.id;
+  const pieceKey = split.pieceKey || (slot.pieceKey ? String(slot.pieceKey) : null);
+  const key = pieceKey ? `${id}#${pieceKey}` : id;
+  return { kind, id, pieceKey, key, frameLabel: adFrameLabel({ id, pieceKey }) };
 }
 
 // Build every ad well the plan puts on this folio. Returns { placed, missed }.
 //
 // `content` per slot (advertiser, fileUrl) is fetched by the caller, because
 // the plan is pure geometry — it deliberately knows nothing about artwork.
-async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, diag) {
+// It is keyed by slotIdentity().key — the order id, plus `#piece` for one
+// piece of a multi-piece order (Tina 2026-11-09), whose pieces each have
+// their own artwork.
+async function placeAdSlotsForPage(doc, pageObj, planPage, contentByKey, diag) {
   const id = host();
   // Geometry facts go into `diag` as well as the console. Reading them should
   // not depend on getting UXP Developer Tool's per-row Debug window open —
@@ -4345,7 +4375,7 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, dia
     + `, live area starts ${((origin.top - pb[0]) / 72).toFixed(4)}in down / `
     + `${((origin.left - pb[1]) / 72).toFixed(4)}in in — ${origin.how}`);
     for (const slot of slots) {
-      const { id: orderId, frameLabel } = slotIdentity(slot);
+      const { key, frameLabel } = slotIdentity(slot);
       try {
         const bounds = adSlotBounds(pageObj, format, slot, origin);
         if (placed === 0) {
@@ -4363,7 +4393,7 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, dia
         // An ad is opaque paper: text must flow around it, not under it.
         try { applyTextWrap(rect, 0); } catch (e) {}
 
-        const content = contentByOrderId[orderId] || null;
+        const content = contentByKey[key] || null;
         if (content && content.fileUrl) {
           const buf = await fetchBinary(content.fileUrl);
           const ext = (String(content.fileUrl).split('?')[0].split('.').pop() || 'pdf').slice(0, 4);
@@ -4398,7 +4428,7 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, dia
         placed++;
       } catch (e) {
         missed++;
-        console.warn('[wvnews-print] ad well failed for order', orderId, e?.message || e);
+        console.warn('[wvnews-print] ad well failed for order', key, e?.message || e);
       }
     }
   } finally {
@@ -4414,6 +4444,10 @@ async function placeAdSlotsForPage(doc, pageObj, planPage, contentByOrderId, dia
 // rectangle sized to the ad's real widthIn×heightIn, place the print-ready
 // artwork, label it `order-<id>` so Publish Page can find it later, and return
 // the coordinates for the placement record.
+//
+// Tina 2026-11-09: a feed item for one piece of a multi-piece order carries
+// pieceKey and that piece's own size and file; its frame is `order-<id>#<piece>`
+// so placing page 2 of a legal display beside page 1 does not reuse a label.
 async function placeAdSized(asset) {
   if (!asset || !asset.fileUrl) throw new Error('This ad has no print-ready artwork to place.');
   const id = host();
@@ -4428,8 +4462,8 @@ async function placeAdSized(asset) {
           const hPt = (Number(asset.heightIn) || 5) * 72;
           const buf = await fetchBinary(asset.fileUrl);
           const ext = (String(asset.fileUrl).split('?')[0].split('.').pop() || 'png').slice(0, 4);
-          const tempPath = await writeTemp(`order-${asset.id}.${ext}`, buf);
-          const frameLabel = `order-${asset.id}`;
+          const frameLabel = adFrameLabel(asset);
+          const tempPath = await writeTemp(`${frameLabel}.${ext}`, buf);
           const vp = doc.viewPreferences;
           const sH = vp.horizontalMeasurementUnits, sV = vp.verticalMeasurementUnits;
           vp.horizontalMeasurementUnits = id.MeasurementUnits.POINTS;
@@ -4460,6 +4494,12 @@ async function placeAdSized(asset) {
 
 // Order ids of the ad frames (label `order-<id>`) on the active page + its
 // spread — the set that Publish Page commits.
+//
+// Tina 2026-11-09: a piece's frame is `order-<id>#<piece>`, but an insertion
+// belongs to the ORDER, so the piece is split off and each order is sent
+// once however many of its pieces are on the page. A holding box's caption
+// (`order-<id>-holding`) is skipped: it is annotation, not an ad, and read as
+// an order it sent "<id>-holding" to the server, which failed as not found.
 function placedAdOrderIdsOnActivePage() {
   const out = [];
   const seen = new Set();
@@ -4470,8 +4510,8 @@ function placedAdOrderIdsOnActivePage() {
     for (const c of [page, page.parent]) {
       for (const it of (c.allPageItems || [])) {
         try {
-          const m = String(it.label || '').match(/^order-(.+)$/);
-          if (m && !seen.has(m[1])) { seen.add(m[1]); out.push(m[1]); }
+          const ad = parseAdFrameLabel(it.label);
+          if (ad && ad.kind === 'order' && !ad.holding && !seen.has(ad.id)) { seen.add(ad.id); out.push(ad.id); }
         } catch (e) {}
       }
     }
@@ -4495,6 +4535,10 @@ function placedAdOrderIdsOnActivePage() {
 // plan, and a frame they moved or resized keeps its new geometry. The frame
 // is still the sold size as far as this is concerned; only its contents
 // change.
+//
+// Tina 2026-11-09: a piece's well is `order-<id>#<piece>`. Its artwork is that
+// piece's approved proof, so the refetch asks for the order id WITH ?piece=;
+// the label read whole would ask for an order called "<id>#<piece>" and 404.
 async function refreshPlacedAdsOnActivePage(editionId) {
   const id = host();
   const doc = activeDocument();
@@ -4514,10 +4558,11 @@ async function refreshPlacedAdsOnActivePage(editionId) {
     for (const it of (c.allPageItems || [])) {
       try {
         const label = String(it.label || '');
-        const holding = label.match(/^((?:order|filler)-.+)-holding$/);
-        if (holding) { captions[holding[1]] = it; continue; }
-        const m = label.match(/^(order|filler)-(.+)$/);
-        if (m) wells.push({ frame: it, kind: m[1], assetId: m[2], frameLabel: label });
+        const ad = parseAdFrameLabel(label);
+        if (!ad) continue;
+        // Keyed by the well's label exactly as written, as `w.frameLabel` is.
+        if (ad.holding) { captions[label.slice(0, -'-holding'.length)] = it; continue; }
+        wells.push({ frame: it, kind: ad.kind, assetId: ad.id, pieceKey: ad.pieceKey, frameLabel: label });
       } catch (e) { /* skip an item we cannot read */ }
     }
   }
@@ -4527,7 +4572,7 @@ async function refreshPlacedAdsOnActivePage(editionId) {
   const details = [];
   for (const w of wells) {
     try {
-      const content = await fetchAssetContent(editionId, w.kind, w.assetId);
+      const content = await fetchAssetContent(editionId, w.kind, w.assetId, w.pieceKey);
       if (!content || !content.fileUrl) {
         unchanged++;
         details.push(`${w.frameLabel}: still no approved artwork`);
@@ -4883,9 +4928,14 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, pl
   // plan.unplaced (assigned to the folio but never dropped on the grid), or
   // the stacker refused it and it is in plan.errors. Those keep the old
   // behaviour rather than silently vanishing from the page.
+  //
+  // Tina 2026-11-09: "planned" is per PIECE of a multi-piece order (key
+  // "8123#p2"), not per order. By order id alone, one positioned piece hid
+  // every other piece of that order on the folio from the loop, and two
+  // pieces' artwork landed in one adContent entry.
   const plannedSlots = (planPage && Array.isArray(planPage.slots) ? planPage.slots : [])
     .map(sl => slotIdentity(sl));
-  const plannedOrderIds = new Set(plannedSlots.filter(x => x.kind === 'order').map(x => x.id));
+  const plannedOrderKeys = new Set(plannedSlots.filter(x => x.kind === 'order').map(x => x.key));
   const plannedFillerIds = new Set(plannedSlots.filter(x => x.kind === 'filler').map(x => x.id));
   // Classifieds are placed together as a grouped section (one header per
   // category) after the loop, not one-frame-each — so collect them here.
@@ -4894,13 +4944,13 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, pl
   // plan is pure geometry and carries no file, so this is the join between
   // "where it goes" and "what goes in it".
   const adContent = {};
-  for (const { kind, id } of plannedSlots) {
-    try { adContent[id] = await fetchAssetContent(edition.id, kind, id); }
+  for (const { kind, id, pieceKey, key } of plannedSlots) {
+    try { adContent[key] = await fetchAssetContent(edition.id, kind, id, pieceKey); }
     catch (e) {
       // A missing payload is not fatal — the well is still built, as a
       // holding box. The space is spoken for either way.
-      console.warn(`[wvnews-print] artwork fetch failed for ${kind}`, id, e?.message || e);
-      adContent[id] = null;
+      console.warn(`[wvnews-print] artwork fetch failed for ${kind}`, key, e?.message || e);
+      adContent[key] = null;
     }
   }
   const diag = (jumpCtx && jumpCtx.diag) || null;
@@ -4939,11 +4989,12 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, pl
 
   for (const a of list) {
     // Already built from the plan, at the geometry the artist chose.
-    if (a.kind === 'order' && plannedOrderIds.has(String(a.id))) continue;
+    if (a.kind === 'order' && plannedOrderKeys.has(adKey(a))) continue;
     if (a.kind === 'filler') continue;   // fillers exist only as plan slots
     try {
-      const content = await fetchAssetContent(edition.id, a.kind, a.id);
-      if (!content) { missed++; console.warn(`[wvnews-print] asset content missing for ${a.kind}/${a.id}`); continue; }
+      // A piece's own size and artwork (?piece=); null for everything else.
+      const content = await fetchAssetContent(edition.id, a.kind, a.id, a.pieceKey || null);
+      if (!content) { missed++; console.warn(`[wvnews-print] asset content missing for ${a.kind}/${adKey(a)}`); continue; }
       // Carry the asset's frameKey (explicit box target) OR auto-assign
       // the next story-N slot in label order so frame-suffix lookups fire.
       if (a.frameKey != null) {
@@ -4960,7 +5011,7 @@ async function placeAssetsForPage(edition, page, doc, styleMap, jumpCtx = {}, pl
       placed++;
     } catch (e) {
       missed++;
-      console.warn(`[wvnews-print] asset placement failed for ${a.kind}/${a.id}:`, e?.message || e);
+      console.warn(`[wvnews-print] asset placement failed for ${a.kind}/${adKey(a)}:`, e?.message || e);
     }
   }
   // Classifieds: grouped into the `classified-body` frame with one text
@@ -5507,7 +5558,7 @@ module.exports = {
   buildEditionPages,
   activeDocument, activePageLabel,
   placeAdSized, placedAdOrderIdsOnActivePage, activeDocPageCount,
-  refreshPlacedAdsOnActivePage,
+  refreshPlacedAdsOnActivePage, slotIdentity,
   openDownloadedPage, createBlankPage, findOpenDocByTempPath, saveAndReadPageBytes, readPageBytes, closePageDoc,
   closeOpenPageDoc, abortPlaceGun, activeDocIsPage, bringPageToFront, openDocumentNames,
   uiBrightness, groupStoryBlock, frameToJumpFrom,

@@ -97,6 +97,16 @@
     id, advertiser, sizeCode, widthIn: w, heightIn: h, colorRequired: color, adSection: section,
     adSectionSource: id === 'TESTED-ad-23' ? 'inferred' : 'set', editionId: 'EXT_101726', pageAssignment: '',
   }));
+  // Tina 2026-11-09: a multi-page legal display is ONE order whose pieces the
+  // feed lists one item each, sharing the order id and told apart by pieceKey.
+  ADS.push(...[
+    ['p1', 'Page 1 of 2', 'Full Page', 10.5, 20.42],
+    ['p2', 'Page 2 of 2', 'Half Page', 10.5, 10],
+  ].map(([pieceKey, pieceLabel, sizeLabel, w, h]) => ({
+    id: 'TESTED-ad-31', advertiser: 'Harrison County Commission', sizeCode: 'Multi-page legal',
+    pieceKey, pieceLabel, sizeLabel, widthIn: w, heightIn: h, colorRequired: false, adSection: 'legal',
+    adSectionSource: 'set', editionId: 'EXT_101726', pageAssignment: '',
+  })));
 
   // ── uxp ───────────────────────────────────────────────────────────
   window.__fakeUxp = {
@@ -262,7 +272,7 @@
     // marketplace
     placeMarketplaceBlock: async (kind, items) => ({ placed: items.length, frame: 'the selected frame' }),
     updateSectionHeaders: async () => ({ placed: 6 }),
-    placeAdSized: async (ad) => ({ page: folioOf(state.front) || 'A3', frameLabel: `order-${ad.id}` }),
+    placeAdSized: async (ad) => ({ page: folioOf(state.front) || 'A3', frameLabel: `order-${ad.id}${ad.pieceKey ? `#${ad.pieceKey}` : ''}` }),
     placedAdOrderIdsOnActivePage: () => ['TESTED-ad-05', 'TESTED-ad-01'],
   };
 
