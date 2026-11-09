@@ -1,7 +1,7 @@
 // Marketplace: classifieds, legals, obituaries and display ads for the edition.
 
 function createMarketplace(ctx) {
-  const { store, run, api, id, fmt, fail, colorPlacement } = ctx;
+  const { store, run, api, id, fmt, fail, colorPlacement, adPiece } = ctx;
 
   const edition = () => {
     const ed = store.state.edition;
@@ -61,11 +61,15 @@ function createMarketplace(ctx) {
 
   // Place one display ad at its real size on the active page, refuse a colour ad
   // on a black-and-white page, and record it (which marks it placed on the site).
-  function placeAd(adId) {
+  //
+  // Tina 2026-11-09: the feed lists each piece of a multi-piece order as its
+  // own item under the same order id, so an item is named by adPiece.adKey()
+  // ("8123#p2"). By id alone every piece's Place button placed piece 1.
+  function placeAd(adKey) {
     return run('Placing the ad', async () => {
       const ed = edition();
       const ads = (store.state.market && store.state.market.ads && store.state.market.ads.items) || [];
-      const ad = ads.find((a) => String(a.id) === String(adId));
+      const ad = ads.find((a) => adPiece.adKey(a) === String(adKey));
       if (!ad) throw fail('That ad is no longer in the feed. Reload the marketplace.');
       const folio = safe(() => id.activePageLabel(), '');
       const verdict = colorPlacement.isColorPage({
@@ -86,12 +90,17 @@ function createMarketplace(ctx) {
         documentName: '',
         frameLabel: r.frameLabel,
         status: 'placed',
+        // The insertion is the order's, so assetId stays the order id. The
+        // placements route does not store pieceKey yet; the frame label it
+        // does store names the piece as well.
+        ...(ad.pieceKey ? { pieceKey: ad.pieceKey } : {}),
       });
-      store.set({ placedAds: { ...store.state.placedAds, [String(ad.id)]: r.page || folio || '' } });
+      store.set({ placedAds: { ...store.state.placedAds, [adPiece.adKey(ad)]: r.page || folio || '' } });
       const unsure = ad.colorRequired && verdict && verdict.color === null;
+      const piece = adPiece.pieceText(ad);
       return {
         kind: unsure ? 'warning' : 'success',
-        text: `Placed ${ad.advertiser || 'the ad'} on ${r.page || folio || 'the page'}.`
+        text: `Placed ${ad.advertiser || 'the ad'}${piece ? ` (${piece})` : ''} on ${r.page || folio || 'the page'}.`
           + (unsure ? ' Could not confirm this is a colour page.' : ''),
       };
     });

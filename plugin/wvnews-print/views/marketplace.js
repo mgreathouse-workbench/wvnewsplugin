@@ -1,7 +1,7 @@
 // Marketplace tab: liners (classifieds, legals, obituaries) and display ads
 // for the chosen edition.
 
-function createMarketplaceView({ html, ui }) {
+function createMarketplaceView({ html, ui, adPiece }) {
   const SECTIONS = [
     { key: 'classified', label: 'Classified section' },
     { key: 'legal', label: 'Legal section' },
@@ -78,20 +78,28 @@ function createMarketplaceView({ html, ui }) {
       <div class="list">${groups[g.key].map((a) => adRow(s, a, busy))}</div>`);
   }
 
+  // Tina 2026-11-09: a multi-piece order is one row per piece, all with the
+  // same advertiser, so a piece's row leads with which piece it is
+  // ("#8123 · Page 2 of 4", as the Page Grid names it) and its own size — the
+  // order's size code describes none of them. Rows are keyed by adKey(), not
+  // the order id the pieces share.
   function adRow(s, a, busy) {
-    const placedOn = (s.placedAds || {})[String(a.id)];
+    const key = adPiece.adKey(a);
+    const placedOn = (s.placedAds || {})[key];
     const dims = a.widthIn && a.heightIn ? `${a.widthIn} × ${a.heightIn} in` : '';
+    const piece = adPiece.pieceText(a);
+    const meta = piece ? [piece, a.sizeLabel || a.sizeCode, dims] : [a.sizeCode, dims];
     return html`<div class="row">
       <span class="cell-main">
         <span class="row-title">${a.advertiser || 'Display ad'}</span>
-        <span class="row-meta">${[a.sizeCode, dims].filter(Boolean).join(' · ') || ' '}</span>
+        <span class="row-meta">${meta.filter(Boolean).join(' · ') || ' '}</span>
       </span>
       <span class="cell-state">
         ${a.colorRequired ? ui.badge('Color', 'accent', 'Must go on a full-colour page') : ''}
         ${a.adSectionSource === 'inferred' ? ui.light('Inferred', 'notice', 'Section inferred from the old Section field, not set on the order') : ''}
         ${placedOn ? ui.light(placedOn, 'positive', `Placed on ${placedOn} this session`) : ''}
       </span>
-      <span class="cell-actions">${ui.action({ label: 'Place', action: 'placeAd', arg: String(a.id), disabled: busy })}</span>
+      <span class="cell-actions">${ui.action({ label: 'Place', action: 'placeAd', arg: key, disabled: busy })}</span>
     </div>`;
   }
 

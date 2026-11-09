@@ -231,12 +231,19 @@ async function getEditionPlan(id) {
 // (story/order/classified/obituary/legal) assigned to this edition.
 // Returns null on 404 so the build loop can skip missing assets without
 // killing the whole run.
-async function fetchAssetContent(editionId, kind, assetId) {
+//
+// Tina 2026-11-09: `pieceKey` asks for ONE piece of a multi-piece order (a
+// multi-page legal display) — its own size and approved artwork, with
+// pieceKey/pieceLabel echoed back. `assetId` stays the bare order id; the
+// piece rides as ?piece=, never inside the path. Without one, the whole order,
+// exactly as before. An unknown piece is a 404, so null like any missing asset.
+async function fetchAssetContent(editionId, kind, assetId, pieceKey = null) {
   if (!editionId || !kind || !assetId) {
     throw new Error('fetchAssetContent: editionId + kind + assetId required');
   }
   try {
-    const r = await call(`/api/print/editions/${encodeURIComponent(editionId)}/asset/${encodeURIComponent(kind)}/${encodeURIComponent(assetId)}`);
+    const piece = pieceKey ? `?piece=${encodeURIComponent(pieceKey)}` : '';
+    const r = await call(`/api/print/editions/${encodeURIComponent(editionId)}/asset/${encodeURIComponent(kind)}/${encodeURIComponent(assetId)}${piece}`);
     return r?.asset || null;
   } catch (e) {
     if (/HTTP 404|not assigned|not found/i.test(e.message)) return null;

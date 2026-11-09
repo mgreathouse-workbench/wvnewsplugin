@@ -313,6 +313,15 @@ await scenario('marketplace loads on first visit and places', async () => {
   await shot(c.page, 'marketplace');
   await click(c.page, 'placeLiners', 'classifieds');
   expect(/Placed 30 classifieds/.test(await statusText(c.page)), `liners: ${await statusText(c.page)}`);
+  // Tina 2026-11-09: each piece of a multi-piece order is its own row, named
+  // as the Page Grid names it, and Place places that piece and no other.
+  expect(/#TESTED-ad-31 · Page 1 of 2/.test(t) && /#TESTED-ad-31 · Page 2 of 2/.test(t), 'piece rows not named');
+  await click(c.page, 'placeAd', 'TESTED-ad-31#p2');
+  expect(/Placed Harrison County Commission \(#TESTED-ad-31 · Page 2 of 2\)/.test(await statusText(c.page)),
+    `place piece: ${await statusText(c.page)}`);
+  // The placement is recorded against the order, not "TESTED-ad-31#p2".
+  const recorded = (await calls(c.page, 'recordPlacement')).map((x) => x.args[0]);
+  expect(recorded.join() === 'TESTED-ad-31', `recorded placements: ${recorded.join()}`);
   await click(c.page, 'refreshPlacedAds');
   expect(/1 of 2 ad wells updated/.test(await statusText(c.page)), `refresh artwork: ${await statusText(c.page)}`);
   await click(c.page, 'publishPage');
