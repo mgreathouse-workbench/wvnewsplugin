@@ -40,11 +40,42 @@ test('a current category with no banner yet gets a text header, never a borrowed
   }
 });
 
-test('an ad still under an old category keeps the banner drawn for it', () => {
+// Michael's new banners (2026-11-18): one per current category, plus legals.
+const NEW_SET = new Set(['community-notices-events', 'yard-sales-auctions', 'help-wanted',
+  'real-estate-rentals', 'services', 'antiques-collectibles', 'appliances', 'baby-items-toys-games',
+  'clothing-jewelry-accessories', 'health-beauty-medical-supplies', 'electronics-office-equipment',
+  'books-music-hobbies', 'sporting-outdoor-goods', 'guns-bows-knives', 'building-materials-supplies',
+  'farm-lawn-garden', 'furniture-household-goods', 'livestock', 'pets',
+  'tools-machinery-heavy-equipment', 'miscellaneous-merchandise', 'free-giveaways', 'wanted-trade',
+  'cars-trucks-suvs-vans', 'classic-cars', 'auto-motorcycle-atv-parts', 'boats', 'motorcycles-atvs',
+  'rvs-trailers-motorhomes', 'legals']);
+
+test('every current category has its own banner in the new set', () => {
+  for (const c of ['Community Notices & Events', 'Books, Music & Hobbies', 'Guns, Bows & Knives',
+    'Cars Trucks SUVs & Vans', 'Miscellaneous Merchandise', 'RVs Trailers & Motorhomes']) {
+    assert.equal(headerSlugFor(c, NEW_SET), categorySlug(c), c);
+  }
+});
+
+test('an ad still under an old category gets the nearest NEW banner, even while the old file is up', () => {
+  const both = new Set([...NEW_SET, ...Object.keys(TODAY)]);
+  for (const avail of [NEW_SET, both]) {
+    assert.equal(headerSlugFor('For Sale', avail), 'miscellaneous-merchandise');
+    assert.equal(headerSlugFor('Vehicles', avail), 'cars-trucks-suvs-vans');
+    assert.equal(headerSlugFor('Real Estate — For Rent', avail), 'real-estate-rentals');
+    assert.equal(headerSlugFor('Yard Sale', avail), 'yard-sales-auctions');
+    assert.equal(headerSlugFor('Other', avail), 'miscellaneous-merchandise');
+    assert.equal(headerSlugFor('Notices & Personal', avail), 'community-notices-events');
+    assert.equal(headerSlugFor('Legals', avail), 'legals');
+  }
+});
+
+test('an old category falls back to its old banner only while the new one is missing', () => {
   assert.equal(headerSlugFor('For Sale', TODAY), 'for-sale');
   assert.equal(headerSlugFor('Real Estate — For Rent', TODAY), 'real-estate');
   assert.equal(headerSlugFor('Yard Sale', TODAY), 'yard-sale');
   assert.equal(headerSlugFor('Other', TODAY), 'other');
+  assert.equal(headerSlugFor('Lost & Found', new Set()), null);
 });
 
 test('no banners at all means text headers', () => {

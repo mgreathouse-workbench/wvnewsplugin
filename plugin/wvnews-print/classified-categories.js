@@ -25,46 +25,52 @@ function categorySlug(name) {
     .replace(/^-+|-+$/g, '');
 }
 
-// The banners drawn for the OLD category names, for ads still filed under
-// one. Only these names borrow a banner under another name; a current
+// The OLD category names, for ads still filed under one: the banner to use,
+// best first. Michael's new set (2026-11-18) replaces the old art, so an old
+// name gets the nearest NEW banner, and the old file only while the new one
+// is missing — once the new set is up, the old files (for-sale, vehicles,
+// real-estate, yard-sale, other) can be deleted without any ad losing its
+// banner. Only these names borrow a banner under another name; a current
 // category uses the banner named for it or a text header.
 const LEGACY_BANNERS = {
-  'for sale': 'for-sale',
-  'vehicles': 'vehicles',
-  'real estate': 'real-estate',
-  'real estate — for sale': 'real-estate',
-  'real estate — for rent': 'real-estate',
-  'homes for sale': 'real-estate',
-  'homes for rent': 'real-estate',
-  'help wanted': 'help-wanted',
-  'services': 'services',
-  'services offered': 'services',
-  'pets': 'pets',
-  'pets & livestock': 'pets',
-  'yard sale': 'yard-sale',
-  'yard & estate sales': 'yard-sale',
-  'other': 'other',
-  'classifieds': 'other',
-  'notices & personal': 'other',
-  'farm & outdoor': 'other',
-  'free / giveaway': 'other',
-  'wanted to buy': 'other',
-  'lost & found': 'other',
-  'antiques/collectibles': 'other',
-  'legals': 'legals',
-  'legal notices': 'legals',
-  'public notices': 'legals',
+  'for sale': ['miscellaneous-merchandise', 'for-sale'],
+  'vehicles': ['cars-trucks-suvs-vans', 'vehicles'],
+  'real estate': ['real-estate-rentals', 'real-estate'],
+  'real estate — for sale': ['real-estate-rentals', 'real-estate'],
+  'real estate — for rent': ['real-estate-rentals', 'real-estate'],
+  'homes for sale': ['real-estate-rentals', 'real-estate'],
+  'homes for rent': ['real-estate-rentals', 'real-estate'],
+  'help wanted': ['help-wanted'],
+  'services': ['services'],
+  'services offered': ['services'],
+  'pets': ['pets'],
+  'pets & livestock': ['pets'],
+  'yard sale': ['yard-sales-auctions', 'yard-sale'],
+  'yard & estate sales': ['yard-sales-auctions', 'yard-sale'],
+  'other': ['miscellaneous-merchandise', 'other'],
+  'classifieds': ['miscellaneous-merchandise', 'other'],
+  'notices & personal': ['community-notices-events', 'other'],
+  'lost & found': ['community-notices-events', 'other'],
+  'farm & outdoor': ['farm-lawn-garden', 'other'],
+  'free / giveaway': ['free-giveaways', 'other'],
+  'wanted to buy': ['wanted-trade', 'other'],
+  'antiques/collectibles': ['antiques-collectibles', 'other'],
+  'legals': ['legals'],
+  'legal notices': ['legals'],
+  'public notices': ['legals'],
 };
 
 // The banner for a category, or null for a text header. `available` is the
 // website's banners: a slug → url map (what Place Content builds) or a Set.
+// An old name goes through LEGACY_BANNERS first, so "For Sale" gets the new
+// MISC. art even while the old for-sale file is still on the website.
 function headerSlugFor(category, available) {
   const has = (slug) => !!slug && !!available
     && (available instanceof Set ? available.has(slug) : !!available[slug]);
-  const own = categorySlug(category);
-  if (has(own)) return own;
   const legacy = LEGACY_BANNERS[String(category || '').trim().toLowerCase()];
-  return has(legacy) ? legacy : null;
+  if (legacy) return legacy.find(has) || null;
+  const own = categorySlug(category);
+  return has(own) ? own : null;
 }
 
 // The categories of a page's classifieds, in print order: by the website's
