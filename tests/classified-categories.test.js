@@ -78,6 +78,13 @@ test('an old category falls back to its old banner only while the new one is mis
   assert.equal(headerSlugFor('Lost & Found', new Set()), null);
 });
 
+test('the legals section gets the LEGALS banner when the website has it, else none', () => {
+  assert.equal(headerSlugFor('Legals', NEW_SET), 'legals');
+  assert.equal(headerSlugFor('Legals', { legals: 'u' }), 'legals');
+  assert.equal(headerSlugFor('Legals', {}), null);
+  assert.equal(headerSlugFor('Legals', null), null);
+});
+
 test('no banners at all means text headers', () => {
   assert.equal(headerSlugFor('Pets', null), null);
   assert.equal(headerSlugFor('Pets', new Set()), null);
