@@ -188,7 +188,7 @@
       const n = { classifieds: 30, legals: 11, obits: 16 }[kind] || 0;
       return { count: n, items: Array.from({ length: n }, (_, i) => ({ id: `${kind}-${i}` })) };
     },
-    fetchSectionHeaders: async () => ({ headers: [] }),
+    fetchSectionHeaders: async () => ({ headers: [{ slug: 'legals', url: 'https://staging.wvnews.com/api/print/section-headers/legals' }] }),
     publishAds: async ({ orderIds }) => { log('publishAds', [orderIds]); await NET(); return { published: orderIds, skipped: [], errors: [] }; },
     createEdition: async (body) => { log('createEdition', [body]); await NET(); return { edition: { id: `${body.siteCode}_NEW` } }; },
     updateEdition: async (id, body) => { log('updateEdition', [id, body]); await NET(); return {}; },
@@ -270,7 +270,10 @@
     captureSourceForJump: async (slug) => ({ slug, sourceDocName: state.front, sourcePage: 'A1', overflowText: '…', overflowChars: 1420, turnlinePlaced: true }),
     completeJumpToFrame: async () => ({ destDocName: state.front, destPage: 'A9', patchedInDoc: true }),
     // marketplace
-    placeMarketplaceBlock: async (kind, items) => ({ placed: items.length, frame: 'the selected frame' }),
+    placeMarketplaceBlock: async (kind, items, styleMap, headers) => {
+      log('placeMarketplaceBlock', [kind, headers ? Object.keys(headers) : null]);
+      return { placed: items.length, frame: 'the selected frame' };
+    },
     updateSectionHeaders: async () => ({ placed: 6 }),
     placeAdSized: async (ad) => ({ page: folioOf(state.front) || 'A3', frameLabel: `order-${ad.id}${ad.pieceKey ? `#${ad.pieceKey}` : ''}` }),
     placedAdOrderIdsOnActivePage: () => ['TESTED-ad-05', 'TESTED-ad-01'],

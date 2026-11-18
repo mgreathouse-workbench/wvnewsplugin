@@ -319,8 +319,11 @@ function buildMarketplaceText(kind, items) {
 // one blocks array for applyRichTextToFrame — title as its own paragraph,
 // the notice's formatted paragraphs after it, and a blank paragraph between
 // notices. Falls back to a plain-text paragraph if an item lacks richText.
-function buildLegalBlocks(items) {
+// `banner`: start with an empty centered paragraph (index 0) for the LEGALS
+// banner to be anchored into, the same placeholder a classified category gets.
+function buildLegalBlocks(items, { banner = false } = {}) {
   const blocks = [];
+  if (banner) blocks.push({ align: 'center', runs: [{ text: '' }] });
   items.forEach((l, idx) => {
     if (idx > 0) blocks.push({ align: 'left', runs: [{ text: '' }] });
     // Title is intentionally not placed — body text only.
@@ -957,6 +960,13 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
           if (kind === 'legals') {
             const oneCol = items.filter(l => (Number(l.columnCount) || 1) <= 1);
             const multi  = items.filter(l => (Number(l.columnCount) || 1) > 1);
+            // The LEGALS banner (section-headers/legals.pdf) heads the section:
+            // anchored at the top of the 1-column block, which the section
+            // starts with at the left margin. Michael 2026-11-18. With only
+            // multi-column notices on the page, that block holds just the
+            // banner, so the section still gets its header. No art → no banner,
+            // as before.
+            const bannerSlug = headerUrls ? headerSlugFor('Legals', headerUrls) : null;
 
             // Lay the blocks out left-to-right, computed in points.
             const vp = doc.viewPreferences;
@@ -992,7 +1002,7 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
                 rightCursor = x - GAP;
                 return f;
               };
-              if (oneCol.length) plan.push({ frame: mkLeft(CONTENT_BLOCK.widthIn), widthIn: CONTENT_BLOCK.widthIn, legals: oneCol, multi: false, border: false });
+              if (oneCol.length || bannerSlug) plan.push({ frame: mkLeft(CONTENT_BLOCK.widthIn), widthIn: CONTENT_BLOCK.widthIn, legals: oneCol, multi: false, border: false, banner: bannerSlug });
               for (const l of multi) {
                 const w = legalColumnWidthIn(l.columnCount);
                 plan.push({ frame: mkRight(w), widthIn: w, legals: [l], multi: true, border: !!l.border });
@@ -1003,8 +1013,13 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
             }
             if (!plan.length) throw new Error('Nothing to place.');
             for (const p of plan) {
-              const blocks = buildLegalBlocks(p.legals);
+              const blocks = buildLegalBlocks(p.legals, { banner: !!p.banner });
               if (blocks.length) applyRichTextToFrame(id, p.frame, blocks, fmt);
+              // Same placer as a classified category banner: a hair under the
+              // column width (a full-width inline object oversets the line).
+              if (p.banner) {
+                await placeClassifiedHeader(id, doc, p.frame, 0, headerUrls[p.banner], p.banner, CONTENT_BLOCK.widthIn * 72 - 1);
+              }
               // Per-frame styling for multi-column notices, re-applied to any
               // continuation frames so the border/wrap carries across the thread.
               const decorate = p.multi ? (f) => {

@@ -46,7 +46,8 @@ function createMarketplace(ctx) {
     return run(`Placing ${LABEL[kind] || kind}`, async () => {
       const items = (store.state.market && store.state.market[kind] && store.state.market[kind].items) || [];
       if (!items.length) throw fail(`There are no ${LABEL[kind] || kind} to place.`);
-      const headers = kind === 'classifieds' ? await sectionHeaderUrls() : null;
+      // Classifieds get a banner per category; legals one LEGALS banner.
+      const headers = (kind === 'classifieds' || kind === 'legals') ? await sectionHeaderUrls() : null;
       const r = await id.placeMarketplaceBlock(kind, items, null, headers);
       return `Placed ${r.placed} ${LABEL[kind] || kind} into ${r.frame || 'the selected frame'}.`;
     });

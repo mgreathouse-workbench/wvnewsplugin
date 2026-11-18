@@ -313,6 +313,12 @@ await scenario('marketplace loads on first visit and places', async () => {
   await shot(c.page, 'marketplace');
   await click(c.page, 'placeLiners', 'classifieds');
   expect(/Placed 30 classifieds/.test(await statusText(c.page)), `liners: ${await statusText(c.page)}`);
+  // Michael 2026-11-18: legals get the LEGALS banner, so placing them hands
+  // InDesign the website's banners, as classifieds always did.
+  await click(c.page, 'placeLiners', 'legals');
+  expect(/Placed 11 legal notices/.test(await statusText(c.page)), `legals: ${await statusText(c.page)}`);
+  const legalsPlace = (await calls(c.page, 'placeMarketplaceBlock')).find((x) => x.args[0] === 'legals');
+  expect(!!legalsPlace && (legalsPlace.args[1] || []).includes('legals'), `legals placed without the banner: ${JSON.stringify(legalsPlace && legalsPlace.args)}`);
   // Tina 2026-11-09: each piece of a multi-piece order is its own row, named
   // as the Page Grid names it, and Place places that piece and no other.
   expect(/#TESTED-ad-31 · Page 1 of 2/.test(t) && /#TESTED-ad-31 · Page 2 of 2/.test(t), 'piece rows not named');
