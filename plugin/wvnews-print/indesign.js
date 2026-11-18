@@ -25,6 +25,9 @@ const { LINER_TYPE, LINER_PHOTO_ASPECT } = require('./liner-type-spec.js');
 // Tina 2026-11-09: an order's ad frame is named by order AND piece, so a
 // multi-page legal display builds one well per piece. See ad-piece.js.
 const { adKey, splitAdKey, adFrameLabel, parseAdFrameLabel } = require('./ad-piece.js');
+// Michael 2026-11-18: the classified section prints in category-list order,
+// each category under its own banner or a text header. See the module.
+const { headerSlugFor, orderCategories } = require('./classified-categories.js');
 
 // The grid the plugin lays out on. Everything below was previously hardcoded
 // to the Exponent Telegram broadsheet; this names that assumption so it can
@@ -289,7 +292,7 @@ function buildMarketplaceText(kind, items) {
       if (!byCat.has(c)) byCat.set(c, []);
       byCat.get(c).push(it);
     }
-    for (const cat of [...byCat.keys()].sort((a, b) => a.localeCompare(b))) {
+    for (const cat of orderCategories(byCat)) {
       headerIdx.push(lines.length);
       lines.push(cat);
       for (const it of byCat.get(cat)) {
@@ -330,25 +333,6 @@ function buildLegalBlocks(items) {
   return blocks;
 }
 
-// Map a classified category name → the section-header graphic slug (matches
-// the PDFs in Firebase page-layout-elements/section-headers/). Normalized,
-// so "Real Estate — For Rent", "Services Offered", "Pets & Livestock" etc.
-// all resolve. Categories with no dedicated art fall back to `other`.
-function categoryHeaderSlug(category) {
-  const c = String(category || '').toLowerCase();
-  if (/for\s*sale/.test(c) && !/real\s*estate/.test(c)) return 'for-sale';
-  if (/vehicle|auto|car|truck|motorcycle/.test(c)) return 'vehicles';
-  if (/real\s*estate|for\s*rent|apartment|rental|house|home/.test(c)) return 'real-estate';
-  if (/help\s*wanted|employ|job/.test(c)) return 'help-wanted';
-  if (/service/.test(c)) return 'services';
-  if (/pet|livestock|animal/.test(c)) return 'pets';
-  if (/yard|estate\s*sale|garage\s*sale|rummage/.test(c)) return 'yard-sale';
-  if (/legal|notice.*publ|public.*notice/.test(c)) return 'legals';
-  // Everything else (Other, Notices & Personal, Free/Giveaway, Wanted to
-  // Buy, Lost & Found, Farm & Outdoor, …) → the OTHER banner.
-  return 'other';
-}
-
 // Build classifieds as styled blocks grouped by category. For categories
 // with a header graphic available we emit an EMPTY placeholder paragraph the
 // caller anchors the PDF into (replacing the text header); categories with no
@@ -376,7 +360,7 @@ function buildClassifiedBlocks(items, resolveHeaderSlug) {
   }
   const push = (block, catName) => { paraCat[blocks.length] = catName; blocks.push(block); };
   let firstCat = true;
-  for (const cat of [...byCat.keys()].sort((a, b) => a.localeCompare(b))) {
+  for (const cat of orderCategories(byCat)) {
     const slug = resolveHeaderSlug ? resolveHeaderSlug(cat) : null;
     // Blank line before each new category (separates groups) — not at the top,
     // and not before a graphic header (the banner + its spaceBefore already
@@ -1043,12 +1027,9 @@ async function placeMarketplaceBlock(kind, items, styleMap, headerUrls = null) {
           // ── Classifieds / obits: a single 1-column block ─────────
           const frame = createContentBlockFrame(id, doc, page, CONTENT_BLOCK.widthIn);
           if (kind === 'classifieds') {
-            // A category gets a header graphic only if art is available for it.
-            const resolveHeaderSlug = (cat) => {
-              if (!headerUrls) return null;
-              const slug = categoryHeaderSlug(cat);
-              return (slug && headerUrls[slug]) ? slug : null;
-            };
+            // A category gets a header graphic only if art is available for it:
+            // its own banner, or (an old category name) the banner drawn for it.
+            const resolveHeaderSlug = (cat) => (headerUrls ? headerSlugFor(cat, headerUrls) : null);
             const { blocks, headerIdx, headerAnchors, photoAnchors, paraCat } = buildClassifiedBlocks(items, resolveHeaderSlug);
             if (!blocks.length) throw new Error('Nothing to place.');
             applyRichTextToFrame(id, frame, blocks, fmt);
@@ -4644,14 +4625,14 @@ async function placeClassifiedSection(page, spread, items, styleMap, doc) {
   for (const c of [page, spread]) frame = frame || frameByLabelOrName(c, 'classified-body');
   if (!frame) { console.warn('[wvnews-print] no frame labeled "classified-body" for classifieds'); return; }
 
-  // Group by category, stable alphabetical order.
+  // Group by category, in the category list's order (see classified-categories.js).
   const byCat = new Map();
   for (const it of items) {
     const cat = String(it.category || 'Classifieds').trim() || 'Classifieds';
     if (!byCat.has(cat)) byCat.set(cat, []);
     byCat.get(cat).push(it);
   }
-  const cats = [...byCat.keys()].sort((a, b) => a.localeCompare(b));
+  const cats = orderCategories(byCat);
 
   // One paragraph per line; track which paragraph indices are headers, and
   // which carry paid add-ons.
